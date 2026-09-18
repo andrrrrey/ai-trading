@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.ingestion.base_client import BaseSourceClient, HealthRecorder
-from app.ingestion.schemas import PriceBar, PriceHistory
+from app.ingestion.schemas import RawPriceBar, RawPriceHistory
+
+_NEW_YORK = ZoneInfo("America/New_York")
 
 
 def _now() -> datetime:
@@ -27,12 +30,16 @@ def _to_float(value: Any) -> float | None:
 
 
 def _bar_date(value: Any) -> date | None:
+    """Дата бара в торговой зоне America/New_York (ТЗ 6.6)."""
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(_NEW_YORK).date()
 
 
 class AlpacaClient(BaseSourceClient):
@@ -62,7 +69,7 @@ class AlpacaClient(BaseSourceClient):
 
     async def get_price_history(
         self, ticker: str, *, timeframe: str = "1Day", limit: int = 300
-    ) -> PriceHistory:
+    ) -> RawPriceHistory:
         data = await self._get_json(
             f"/v2/stocks/{ticker}/bars",
             params={"timeframe": timeframe, "limit": limit, "adjustment": "raw"},
@@ -70,20 +77,20 @@ class AlpacaClient(BaseSourceClient):
         raw_bars = data.get("bars", []) if isinstance(data, dict) else []
         fetched = _now()
         bars = [
-            PriceBar(
+            RawPriceBar(
                 ticker=ticker,
                 date=_bar_date(row.get("t")),
-                open=_to_float(row.get("o")) or 0.0,
-                high=_to_float(row.get("h")) or 0.0,
-                low=_to_float(row.get("l")) or 0.0,
-                close=_to_float(row.get("c")) or 0.0,
-                volume=_to_float(row.get("v")) or 0.0,
+                open=_to_float(row.get("o")),
+                high=_to_float(row.get("h")),
+                low=_to_float(row.get("l")),
+                close=_to_float(row.get("c")),
+                volume=_to_float(row.get("v")),
                 source=self.source,
                 fetched_at=fetched,
             )
             for row in raw_bars
             if isinstance(row, dict) and _bar_date(row.get("t")) is not None
         ]
-        return PriceHistory(
+        return RawPriceHistory(
             ticker=ticker, bars=bars, source=self.source, fetched_at=fetched
         )

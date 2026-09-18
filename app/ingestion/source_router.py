@@ -19,8 +19,8 @@ from app.ingestion.schemas import (
     Filing,
     Fundamentals,
     NewsItem,
-    PriceHistory,
     Quote,
+    RawPriceHistory,
 )
 from app.ingestion.sec_edgar_client import SECEdgarClient
 
@@ -82,7 +82,7 @@ class SourceRouter:
                     source=primary_name,
                 ) from fallback_exc
 
-    async def get_price_history(self, ticker: str) -> PriceHistory:
+    async def get_price_history(self, ticker: str) -> RawPriceHistory:
         """История цен: FMP → Alpaca."""
         fallback = None
         if self._alpaca is not None:

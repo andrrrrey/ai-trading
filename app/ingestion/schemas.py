@@ -1,8 +1,12 @@
-"""DTO-модели данных источников (ТЗ раздел 6).
+"""«Сырые» DTO данных источников (ТЗ раздел 6).
 
-Каждая модель несёт поля ``source`` и ``fetched_at`` — требование подэтапа 1.1
-("каждый клиент пишет source и fetched_at при сохранении данных"). Полная
-нормализация, дедупликация и строгая валидация полей — подэтап 1.2.
+Клиенты источников возвращают эти модели ровно так, как пришли данные из API:
+отсутствующие числовые значения — ``None`` (никогда не 0 и не выдуманное
+значение, ТЗ 6.6). Проверка качества, нормализация и дедупликация выполняются
+слоем нормализации (``app.ingestion.normalization``) до передачи в Feature Engine.
+
+Каждая модель несёт поля ``source`` и ``fetched_at`` — происхождение и время
+получения данных сохраняются вместе с расчётом (ТЗ 6.1, 13).
 """
 from __future__ import annotations
 
@@ -22,22 +26,24 @@ class SourcedModel(BaseModel):
 
 class Quote(SourcedModel):
     ticker: str
-    price: float
+    price: float | None = None
 
 
-class PriceBar(SourcedModel):
+class RawPriceBar(SourcedModel):
+    """OHLCV-бар «как пришёл» — числовые поля могут быть None (пропуск)."""
+
     ticker: str
     date: date
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+    volume: float | None = None
 
 
-class PriceHistory(SourcedModel):
+class RawPriceHistory(SourcedModel):
     ticker: str
-    bars: list[PriceBar]
+    bars: list[RawPriceBar]
 
 
 class Fundamentals(SourcedModel):
@@ -50,6 +56,8 @@ class Fundamentals(SourcedModel):
     debt_equity: float | None = None
     pe: float | None = None
     forward_pe: float | None = None
+    # Проставляется слоем нормализации: часть ключевых метрик отсутствует.
+    is_incomplete: bool = False
 
 
 class Earnings(SourcedModel):

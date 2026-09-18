@@ -14,9 +14,9 @@ from app.ingestion.schemas import (
     Earnings,
     Fundamentals,
     NewsItem,
-    PriceBar,
-    PriceHistory,
     Quote,
+    RawPriceBar,
+    RawPriceHistory,
 )
 
 
@@ -68,33 +68,33 @@ class FMPClient(BaseSourceClient):
         row = _first_row(data, source=self.source, ticker=ticker, what="quote")
         return Quote(
             ticker=ticker,
-            price=_to_float(row.get("price")) or 0.0,
+            price=_to_float(row.get("price")),
             source=self.source,
             fetched_at=_now(),
         )
 
-    async def get_price_history(self, ticker: str) -> PriceHistory:
+    async def get_price_history(self, ticker: str) -> RawPriceHistory:
         data = await self._get_json(
             "/stable/historical-price-eod/full", params={"symbol": ticker}
         )
         rows = _as_rows(data)
         fetched = _now()
         bars = [
-            PriceBar(
+            RawPriceBar(
                 ticker=ticker,
                 date=_to_date(row.get("date")),
-                open=_to_float(row.get("open")) or 0.0,
-                high=_to_float(row.get("high")) or 0.0,
-                low=_to_float(row.get("low")) or 0.0,
-                close=_to_float(row.get("close")) or 0.0,
-                volume=_to_float(row.get("volume")) or 0.0,
+                open=_to_float(row.get("open")),
+                high=_to_float(row.get("high")),
+                low=_to_float(row.get("low")),
+                close=_to_float(row.get("close")),
+                volume=_to_float(row.get("volume")),
                 source=self.source,
                 fetched_at=fetched,
             )
             for row in rows
             if _to_date(row.get("date")) is not None
         ]
-        return PriceHistory(
+        return RawPriceHistory(
             ticker=ticker, bars=bars, source=self.source, fetched_at=fetched
         )
 
