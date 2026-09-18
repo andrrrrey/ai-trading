@@ -1,0 +1,49 @@
+# Веса Score, пороги Risk Filter и Rule Engine — версия v1 (ТЗ разделы 8–10).
+# Этот файл — источник значений для formula_versions (is_active). Изменение
+# порогов/весов = новая версия формул, не требует деплоя кода (КП с. 7, 9).
+version: "v1.0"
+
+# ---- Final Score: веса групп (зафиксированы КП, с. 7). Сумма = 1.0 ----
+final_score_weights:
+  momentum: 0.20
+  growth: 0.15
+  fundamentals: 0.15
+  relative_strength: 0.15
+  volume: 0.10
+  valuation: 0.10
+  catalysts: 0.15
+
+# ---- Параметры нормализации факторных Score (v1, конфигурируемо; ТЗ 8) ----
+factor_scores:
+  momentum:
+    weight_rsi: 0.30
+    weight_macd: 0.30
+    weight_ema_structure: 0.40
+    rsi_sweet_spot: [60, 70]
+    rsi_overbought: 80
+  growth:
+    revenue_growth_multiplier: 2.0
+    eps_growth_multiplier: 1.5
+  relative_strength:
+    rel_strength_multiplier: 5.0
+  volume:
+    ratio_multiplier: 50.0
+  catalysts:
+    sentiment_multiplier: 50.0
+
+# ---- Risk Filter: пороги флагов (v1; ТЗ раздел 9) ----
+risk_filter:
+  high_volatility_atr_ratio: 0.05        # ATR/close > 5%
+  event_risk_days: 3                     # earnings в ближайшие <= N раб. дней
+  gap_risk_pct: 5.0                       # |Gap%| > 5%
+  overextension_ema20_pct: 15.0          # Distance to EMA20 > 15%
+  liquidity_min_avg_volume: 500000       # средний объём 20д
+  news_risk_sentiment: -0.3              # news_sentiment < -0.3 (Этап 2)
+
+# ---- Rule Engine: пороги статуса по Final Score (v1; ТЗ раздел 10) ----
+rule_engine:
+  buy_min_score: 75
+  buy_confirm_momentum: 60
+  buy_confirm_volume: 50
+  buy_on_dip_distance_ema20_pct: 10.0
+  watch_min_score: 50
