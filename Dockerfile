@@ -12,6 +12,8 @@ COPY app ./app
 RUN pip install --upgrade pip && pip install .
 
 COPY config ./config
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
 
 # По умолчанию поднимается служебный FastAPI (health/оркестратор).
 # Telegram-бот запускается отдельным процессом/сервисом (подэтап 1.9).
