@@ -56,6 +56,7 @@ class FactorScores(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    ticker: str
     momentum: FactorScore
     growth: FactorScore
     fundamentals: FactorScore
@@ -300,6 +301,7 @@ def compute_factor_scores(
     """
     cfg: FactorScoresConfig = (config or load_scoring_config()).factor_scores
     return FactorScores(
+        ticker=features.ticker,
         momentum=_momentum(features, cfg.momentum),
         growth=_growth(fundamentals, cfg.growth),
         fundamentals=_fundamentals(fundamentals, cfg.fundamentals),
