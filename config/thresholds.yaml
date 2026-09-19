@@ -14,20 +14,31 @@ final_score_weights:
   catalysts: 0.15
 
 # ---- Параметры нормализации факторных Score (v1, конфигурируемо; ТЗ 8) ----
+# Формулы внутри factor scores эвристические — открытый вопрос для тюнинга после
+# запуска (ТЗ раздел 16). Все множители/пороги вынесены сюда.
 factor_scores:
   momentum:
     weight_rsi: 0.30
     weight_macd: 0.30
     weight_ema_structure: 0.40
-    rsi_sweet_spot: [60, 70]
-    rsi_overbought: 80
+    rsi_sweet_spot: [60, 70]     # зона «здорового» импульса → 100
+    rsi_overbought: 80           # >= порога — усиленный штраф за перекупленность
+    macd_hist_multiplier: 50.0   # чувствительность к гистограмме (норм. по цене)
   growth:
     revenue_growth_multiplier: 2.0
     eps_growth_multiplier: 1.5
+  fundamentals:
+    eps_positive_score: 70.0     # балл при EPS > 0
+    eps_negative_score: 30.0     # балл при EPS <= 0
+    debt_equity_penalty: 50.0    # штраф на единицу Debt/Equity (обратная шкала)
   relative_strength:
     rel_strength_multiplier: 5.0
   volume:
     ratio_multiplier: 50.0
+  valuation:
+    pe_fair_low: 10.0            # P/E <= low → 100 (дёшево)
+    pe_fair_high: 40.0           # P/E >= high → 0 (дорого)
+    pe_negative_score: 25.0      # отрицательный P/E (нет прибыли) → низкий балл
   catalysts:
     sentiment_multiplier: 50.0
 
