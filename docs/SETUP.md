@@ -26,7 +26,7 @@ Telegram-бот: присылаете тикер акции США (наприм
 
 | Сервис | Зачем | Тариф для MVP | Где получить |
 |---|---|---|---|
-| **Financial Modeling Prep (FMP)** | Основной источник: котировки, история цен, fundamentals, earnings, новости | Starter ~$22/мес (нужен платный — на бесплатном нет большинства fundamentals) | https://site.financialmodelingprep.com/pricing-plans → регистрация → раздел Dashboard/API Keys |
+| **Financial Modeling Prep (FMP)** | Основной источник: котировки, история цен, fundamentals, earnings, новости | **Starter $29/мес** (минимум — включает Annual Fundamentals & Ratios, Historical Stock Price, Financial Market News, US Coverage). Basic (Free) не подходит — без fundamentals/news. Premium $69 избыточен для MVP | https://site.financialmodelingprep.com/pricing-plans → регистрация → раздел Dashboard/API Keys |
 | **SEC EDGAR** | Официальные филинги (10-K/10-Q/8-K) | Бесплатно, **без ключа** | Ключ не нужен. Требуется только корректный `User-Agent` (название проекта + email) |
 | **Alpaca** | Резервный источник котировок | Basic — бесплатно | https://alpaca.markets → Sign up → Paper/Live → API Keys (Key ID + Secret) |
 | **Finnhub** | Резерв новостей / news sentiment | Free | https://finnhub.io → регистрация → Dashboard → API Key |
