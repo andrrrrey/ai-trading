@@ -54,7 +54,9 @@ nano .env   # или любой редактор
 ```dotenv
 # --- Источники данных ---
 FMP_API_KEY=<ключ FMP>
-SEC_USER_AGENT=switch-trading-mvp your-email@example.com   # укажите реальный email
+# Формат: "<название проекта> <контактный email>" — впишите свой реальный email.
+# SEC требует контактный email в каждом запросе (иначе блокировка 403).
+SEC_USER_AGENT=switch-trading-mvp your-email@example.com
 ALPACA_API_KEY_ID=<Key ID из Alpaca>
 ALPACA_API_SECRET_KEY=<Secret из Alpaca>
 FINNHUB_API_KEY=<ключ Finnhub>
