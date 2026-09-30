@@ -4,6 +4,7 @@
 недоступный источник, отсутствующее значение — проходят без падения и без
 ложного (выдуманного) расчёта.
 """
+
 from __future__ import annotations
 
 import re
@@ -26,8 +27,7 @@ ALPACA_BARS = re.compile(r".*/v2/stocks/AAPL/bars")
 def make_service(*, with_alpaca: bool, min_bars: int = 0) -> IngestionService:
     rec = FakeHealthRecorder()
     alpaca = (
-        AlpacaClient(api_key_id="I", api_secret_key="S", max_retries=1,
-                     health_recorder=rec)
+        AlpacaClient(api_key_id="I", api_secret_key="S", max_retries=1, health_recorder=rec)
         if with_alpaca
         else None
     )
@@ -45,8 +45,11 @@ async def test_malformed_response_falls_back_to_reserve():
     respx.get(ALPACA_BARS).mock(
         return_value=httpx.Response(
             200,
-            json={"bars": [{"t": "2026-09-17T04:00:00Z", "o": 10, "h": 12,
-                            "l": 9, "c": 11, "v": 1000}]},
+            json={
+                "bars": [
+                    {"t": "2026-09-17T04:00:00Z", "o": 10, "h": 12, "l": 9, "c": 11, "v": 1000}
+                ]
+            },
         )
     )
     history, report = await service.get_price_history("AAPL")
@@ -63,16 +66,28 @@ async def test_missing_value_is_dropped_end_to_end():
         return_value=httpx.Response(
             200,
             json=[
-                {"date": "2026-09-17", "open": 10, "high": 12, "low": 9,
-                 "close": 11, "volume": 1000},
-                {"date": "2026-09-16", "open": 10, "high": 12, "low": 9,
-                 "close": None, "volume": 1000},  # пропуск close
+                {
+                    "date": "2026-09-17",
+                    "open": 10,
+                    "high": 12,
+                    "low": 9,
+                    "close": 11,
+                    "volume": 1000,
+                },
+                {
+                    "date": "2026-09-16",
+                    "open": 10,
+                    "high": 12,
+                    "low": 9,
+                    "close": None,
+                    "volume": 1000,
+                },  # пропуск close
             ],
         )
     )
     history, report = await service.get_price_history("AAPL")
 
-    assert len(history.bars) == 1        # неполный бар отброшен
+    assert len(history.bars) == 1  # неполный бар отброшен
     assert report.dropped_invalid == 1
     assert report.total_rows == 2
 
@@ -85,8 +100,16 @@ async def test_rate_limit_retried_then_normalized():
             httpx.Response(429, headers={"Retry-After": "0"}),
             httpx.Response(
                 200,
-                json=[{"date": "2026-09-17", "open": 10, "high": 12, "low": 9,
-                       "close": 11, "volume": 1000}],
+                json=[
+                    {
+                        "date": "2026-09-17",
+                        "open": 10,
+                        "high": 12,
+                        "low": 9,
+                        "close": 11,
+                        "volume": 1000,
+                    }
+                ],
             ),
         ]
     )
@@ -119,8 +142,16 @@ async def test_market_data_flags_incomplete_fundamentals():
     respx.get(FMP_HISTORY).mock(
         return_value=httpx.Response(
             200,
-            json=[{"date": "2026-09-17", "open": 10, "high": 12, "low": 9,
-                   "close": 11, "volume": 1000}],
+            json=[
+                {
+                    "date": "2026-09-17",
+                    "open": 10,
+                    "high": 12,
+                    "low": 9,
+                    "close": 11,
+                    "volume": 1000,
+                }
+            ],
         )
     )
     respx.get(re.compile(r".*/stable/ratios")).mock(
@@ -135,6 +166,7 @@ async def test_market_data_flags_incomplete_fundamentals():
     respx.get(re.compile(r".*/stable/earnings")).mock(
         return_value=httpx.Response(200, json=[{"date": "2099-01-01"}])
     )
+    respx.get(re.compile(r".*/stable/news/stock")).mock(return_value=httpx.Response(200, json=[]))
 
     data = await service.get_market_data("AAPL")
 
@@ -142,3 +174,51 @@ async def test_market_data_flags_incomplete_fundamentals():
     assert data.quality["fundamentals"].is_incomplete is True
     assert data.fundamentals.eps_growth is None  # пропуск сохранён
     assert len(data.price_history.bars) == 1
+
+
+@respx.mock
+async def test_market_data_marks_unavailable_earnings_without_crashing():
+    service = make_service(with_alpaca=False)
+    respx.get(FMP_HISTORY).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "date": "2026-09-17",
+                    "open": 10,
+                    "high": 12,
+                    "low": 9,
+                    "close": 11,
+                    "volume": 1000,
+                }
+            ],
+        )
+    )
+    respx.get(re.compile(r".*/stable/ratios")).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "growthRevenue": 0.1,
+                    "netIncomePerShare": 5,
+                    "grossProfitMargin": 0.4,
+                    "debtToEquityRatio": 1,
+                    "priceToEarningsRatio": 20,
+                }
+            ],
+        )
+    )
+    respx.get(re.compile(r".*/stable/key-metrics")).mock(
+        return_value=httpx.Response(200, json=[{}])
+    )
+    respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
+        return_value=httpx.Response(200, json=[{"growthRevenue": 0.1, "growthEPS": 0.1}])
+    )
+    respx.get(re.compile(r".*/stable/earnings")).mock(return_value=httpx.Response(401))
+    respx.get(re.compile(r".*/stable/news/stock")).mock(return_value=httpx.Response(200, json=[]))
+
+    data = await service.get_market_data("AAPL")
+
+    assert data.earnings.next_earnings_date is None
+    assert data.quality["earnings"].is_incomplete is True
+    assert data.is_incomplete is True

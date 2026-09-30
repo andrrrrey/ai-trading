@@ -10,6 +10,7 @@ SourceHealthMonitor реализует протокол HealthRecorder (подэ
 источника статус меняется на ok без ручной правки истории (append-only source_health
 хранит полную ленту проверок).
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import SourceHealth
@@ -41,9 +43,7 @@ class SourceState(BaseModel):
 class SourceHealthMonitor:
     """In-memory агрегатор состояния источников + запись истории в source_health."""
 
-    def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession] | None = None
-    ):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None):
         self._states: dict[str, SourceState] = {}
         self._session_factory = session_factory
 
@@ -65,9 +65,7 @@ class SourceHealthMonitor:
         if self._session_factory is not None:
             await self._persist(record, state, now)
 
-    async def _persist(
-        self, record: HealthRecord, state: SourceState, now: datetime
-    ) -> None:
+    async def _persist(self, record: HealthRecord, state: SourceState, now: datetime) -> None:
         """Пишет событие в source_health (best-effort — сбой БД не ломает запрос)."""
         try:
             async with self._session_factory() as session:
@@ -88,14 +86,43 @@ class SourceHealthMonitor:
     def snapshot(self) -> dict[str, dict]:
         """Текущее состояние всех источников (JSON-сериализуемое) для /health."""
         return {
-            source: state.model_dump(mode="json")
-            for source, state in sorted(self._states.items())
+            source: state.model_dump(mode="json") for source, state in sorted(self._states.items())
         }
 
     def all_ok(self) -> bool:
-        return bool(self._states) and all(
-            s.status == "ok" for s in self._states.values()
-        )
+        return bool(self._states) and all(s.status == "ok" for s in self._states.values())
+
+    async def snapshot_from_db(self, expected_sources: tuple[str, ...] = ()) -> dict[str, dict]:
+        """Общее состояние между процессами API и бота через PostgreSQL."""
+        if self._session_factory is None:
+            return self.snapshot()
+        async with self._session_factory() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(SourceHealth).order_by(SourceHealth.checked_at.desc())
+                    )
+                ).scalars()
+            )
+
+        states = {name: SourceState(source=name) for name in expected_sources}
+        error_totals: dict[str, int] = {}
+        for row in rows:
+            if row.status == "error":
+                error_totals[row.source] = error_totals.get(row.source, 0) + 1
+            state = states.get(row.source) or SourceState(source=row.source)
+            if state.last_checked_at is None:
+                state.status = row.status
+                state.last_checked_at = row.checked_at
+                state.last_latency_ms = row.latency_ms
+                state.consecutive_errors = row.error_count
+                state.last_error = row.last_error
+            if state.last_success_at is None and row.status == "ok":
+                state.last_success_at = row.checked_at
+            states[row.source] = state
+        for source, state in states.items():
+            state.total_errors = error_totals.get(source, 0)
+        return {source: state.model_dump(mode="json") for source, state in sorted(states.items())}
 
 
 @lru_cache

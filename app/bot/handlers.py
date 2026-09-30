@@ -1,17 +1,39 @@
 """aiogram-роутер: связывает сообщения/кнопки с BotService (ТЗ раздел 12)."""
+
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.keyboards import main_keyboard
 from app.bot.service import WELCOME, BotService, parse_ticker
 from app.bot.templates import DISCLAIMER
+from app.config import get_settings
+
+
+class AllowedUsersMiddleware(BaseMiddleware):
+    """Закрывает бот для пользователей вне TELEGRAM_ALLOWED_IDS."""
+
+    def __init__(self, allowed_ids: set[int]):
+        self._allowed_ids = allowed_ids
+
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if self._allowed_ids and (user is None or user.id not in self._allowed_ids):
+            if isinstance(event, Message):
+                await event.answer("Доступ к боту ограничен.")
+            elif isinstance(event, CallbackQuery):
+                await event.answer("Доступ ограничен.", show_alert=True)
+            return None
+        return await handler(event, data)
 
 
 def build_router(service: BotService) -> Router:
     router = Router()
+    middleware = AllowedUsersMiddleware(set(get_settings().telegram_allowed_ids))
+    router.message.middleware(middleware)
+    router.callback_query.middleware(middleware)
 
     @router.message(CommandStart())
     async def on_start(message: Message) -> None:
@@ -52,8 +74,7 @@ def build_router(service: BotService) -> Router:
     @router.message(F.text)
     async def on_other(message: Message) -> None:
         await message.answer(
-            "Пришлите тикер (например, <code>AAPL</code>) или /history NVDA.\n\n"
-            + DISCLAIMER
+            "Пришлите тикер (например, <code>AAPL</code>) или /history NVDA.\n\n" + DISCLAIMER
         )
 
     return router

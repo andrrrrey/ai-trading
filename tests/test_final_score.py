@@ -1,4 +1,5 @@
 """Тесты Final Score и версий формул (ТЗ разделы 7–8, 13; DoD подэтапа 1.5)."""
+
 from __future__ import annotations
 
 import pytest
@@ -16,14 +17,13 @@ CFG = load_scoring_config()
 
 def fs_of(**scores: float | None) -> FactorScores:
     """Строит FactorScores с заданными баллами (отсутствующие = None)."""
+
     def fac(name: str, value: float | None) -> FactorScore:
         return FactorScore(
             name=name, score=value, inputs={}, rule="test", is_incomplete=value is None
         )
 
-    return FactorScores(
-        ticker="AAPL", **{n: fac(n, scores.get(n)) for n in FACTOR_NAMES}
-    )
+    return FactorScores(ticker="AAPL", **{n: fac(n, scores.get(n)) for n in FACTOR_NAMES})
 
 
 ALL_SIXTY = dict.fromkeys(FACTOR_NAMES, 60.0)
@@ -33,11 +33,11 @@ ALL_SIXTY = dict.fromkeys(FACTOR_NAMES, 60.0)
 # round_half_up — не банковское округление (ТЗ 8)
 # --------------------------------------------------------------------------- #
 def test_round_half_up_not_bankers():
-    assert round_half_up(2.5) == 3       # банковское дало бы 2
+    assert round_half_up(2.5) == 3  # банковское дало бы 2
     assert round_half_up(74.5) == 75
     assert round_half_up(0.5) == 1
     assert round_half_up(99.4) == 99
-    assert round(2.5) == 2               # контраст: встроенный round — банковский
+    assert round(2.5) == 2  # контраст: встроенный round — банковский
 
 
 # --------------------------------------------------------------------------- #
@@ -52,8 +52,15 @@ def test_uniform_scores_equal_final():
 def test_weighted_sum_hand_computed():
     # 0.2·80+0.15·70+0.15·60+0.15·90+0.10·50+0.10·40+0.15·100 = 73.0
     result = compute_final_score(
-        fs_of(momentum=80, growth=70, fundamentals=60, relative_strength=90,
-              volume=50, valuation=40, catalysts=100)
+        fs_of(
+            momentum=80,
+            growth=70,
+            fundamentals=60,
+            relative_strength=90,
+            volume=50,
+            valuation=40,
+            catalysts=100,
+        )
     )
     assert result.final_score == 73
 
@@ -71,16 +78,16 @@ def test_single_rounding_half_up():
 
 
 # --------------------------------------------------------------------------- #
-# Неполнота: ренормировка весов без выдуманных значений
+# Неполнота: фиксированные веса, Final Score не публикуется
 # --------------------------------------------------------------------------- #
-def test_missing_factor_renormalizes_weights():
+def test_missing_factor_blocks_final_score_without_reweighting():
     scores = dict(ALL_SIXTY)
     scores["catalysts"] = None
     result = compute_final_score(fs_of(**scores))
-    assert result.final_score == 60           # 60 при ренормировке остаётся 60
+    assert result.final_score is None
     assert result.is_incomplete is True
     assert result.factor_scores["catalysts"] is None
-    assert result.weights_used["catalysts"] == 0.0
+    assert result.weights_used["catalysts"] == 0.15
     assert sum(result.weights_used.values()) == pytest.approx(1.0, abs=0.01)
 
 

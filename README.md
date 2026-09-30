@@ -2,11 +2,11 @@
 
 MVP AI-системы для свитч-трейдинга: Telegram-бот анализирует акцию US-рынка по
 тикеру — собирает данные, считает 7 факторных Score и Final Score (0–100),
-применяет Risk Filter, формирует статус **BUY / BUY ON DIP / WATCH / SELL**,
-объясняет результат через LLM и сохраняет историю сигналов.
+применяет Risk Filter и сохраняет историю сигналов.
 
-> Разработка ведётся по подэтапам ТЗ (1.1–1.10, затем 2.1–2.7). Текущий
-> статус: **подэтап 1.1 — источники данных**.
+> Текущий статус: **Этап 1 (1.1–1.10) реализован и готов к серверной
+> демонстрации**. Rule Engine и LLM-объяснение относятся к Этапу 2; до их
+> реализации поле статуса является консервативным потолком Risk Filter.
 
 ## Архитектура (9 слоёв)
 
@@ -32,7 +32,10 @@ tenacity · Docker/docker-compose.
 app/
   config.py            # Pydantic Settings (.env)
   main.py              # FastAPI + /health
-  ingestion/           # клиенты источников + source_router (реализовано: 1.1)
+  ingestion/           # клиенты источников, fallback и контроль качества
+  features/            # индикаторы и детерминированные Catalysts
+  scoring/             # 7 Factor Scores и Final Score
+  risk/                # Risk Filter
 config/thresholds.yaml # веса Score, пороги Risk/Rule Engine (v1)
 tests/                 # pytest
 docs/acceptance-evidence/  # артефакты приёмки по подэтапам
@@ -54,6 +57,9 @@ cp .env.example .env   # заполнить ключи (см. ниже)
 docker compose up --build
 # health-check: http://localhost:8000/health
 ```
+
+Compose автоматически применяет миграции, запускает API и Telegram-бота. База
+данных наружу не публикуется, API слушает только loopback сервера.
 
 ## Конфигурация
 

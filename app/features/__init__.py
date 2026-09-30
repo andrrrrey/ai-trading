@@ -31,3 +31,6 @@ __all__ = [
     "sma",
     "volume_ratio",
 ]
+from app.features.catalysts import CatalystAnalysis, analyze_catalysts
+
+__all__ = ["CatalystAnalysis", "analyze_catalysts"]

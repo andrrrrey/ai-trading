@@ -1,4 +1,5 @@
 """Контрактные тесты FMPClient на замоканных ответах (ТЗ 6.1)."""
+
 from __future__ import annotations
 
 import re
@@ -14,7 +15,8 @@ from tests.conftest import FakeHealthRecorder
 def make_client() -> tuple[FMPClient, FakeHealthRecorder]:
     recorder = FakeHealthRecorder()
     client = FMPClient(
-        api_key="TEST", base_url="https://financialmodelingprep.com",
+        api_key="TEST",
+        base_url="https://financialmodelingprep.com",
         health_recorder=recorder,
     )
     return client, recorder
@@ -42,12 +44,30 @@ async def test_get_price_history_maps_bars():
         return_value=httpx.Response(
             200,
             json=[
-                {"date": "2026-09-17", "open": 1, "high": 2, "low": 0.5,
-                 "close": 1.5, "volume": 1000},
-                {"date": "2026-09-16", "open": 1, "high": 2, "low": 0.5,
-                 "close": 1.4, "volume": 900},
-                {"date": None, "open": 1, "high": 2, "low": 0.5,
-                 "close": 1.4, "volume": 900},  # некорректная строка отбрасывается
+                {
+                    "date": "2026-09-17",
+                    "open": 1,
+                    "high": 2,
+                    "low": 0.5,
+                    "close": 1.5,
+                    "volume": 1000,
+                },
+                {
+                    "date": "2026-09-16",
+                    "open": 1,
+                    "high": 2,
+                    "low": 0.5,
+                    "close": 1.4,
+                    "volume": 900,
+                },
+                {
+                    "date": None,
+                    "open": 1,
+                    "high": 2,
+                    "low": 0.5,
+                    "close": 1.4,
+                    "volume": 900,
+                },  # некорректная строка отбрасывается
             ],
         )
     )
@@ -66,17 +86,21 @@ async def test_get_fundamentals_uses_single_period():
     ratios = respx.get(re.compile(r".*/stable/ratios")).mock(
         return_value=httpx.Response(
             200,
-            json=[{"grossProfitMargin": 0.44, "debtEquityRatio": 1.2,
-                   "priceEarningsRatio": 30.0, "eps": 6.1}],
+            json=[
+                {
+                    "grossProfitMargin": 0.44,
+                    "debtToEquityRatio": 1.2,
+                    "priceToEarningsRatio": 30.0,
+                    "netIncomePerShare": 6.1,
+                }
+            ],
         )
     )
     metrics = respx.get(re.compile(r".*/stable/key-metrics")).mock(
         return_value=httpx.Response(200, json=[{"eps": 6.1, "forwardPE": 25.0}])
     )
     growth = respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
-        return_value=httpx.Response(
-            200, json=[{"growthRevenue": 0.08, "growthEPS": 0.12}]
-        )
+        return_value=httpx.Response(200, json=[{"growthRevenue": 0.08, "growthEPS": 0.12}])
     )
 
     fundamentals = await client.get_fundamentals("AAPL", period="annual")
@@ -120,8 +144,11 @@ async def test_get_news_skips_untitled():
         return_value=httpx.Response(
             200,
             json=[
-                {"title": "Good quarter", "publishedDate": "2026-09-17T10:00:00Z",
-                 "url": "http://x"},
+                {
+                    "title": "Good quarter",
+                    "publishedDate": "2026-09-17T10:00:00Z",
+                    "url": "http://x",
+                },
                 {"title": None},
             ],
         )

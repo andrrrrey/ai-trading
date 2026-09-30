@@ -1,8 +1,7 @@
 """Risk Filter — базовый набор флагов риска (ТЗ раздел 9).
 
-Этап 1 реализует 6 флагов: high_volatility, event_risk, gap_risk, overextension,
-liquidity_risk, missing_data. Флаг news_risk зависит от новостного сентимента и
-переносится на подэтап 2.1.
+Реализованы 7 флагов: high_volatility, event_risk, gap_risk, overextension,
+liquidity_risk, missing_data и news_risk.
 
 Каждый флаг возвращает причину и конкретное значение, вызвавшее срабатывание.
 Выход — RiskAssessment {active_flags, risk_level, allowed_max_status} — передаётся
@@ -12,6 +11,7 @@ liquidity_risk, missing_data. Флаг news_risk зависит от новос�
 missing_data всегда даёт risk_level=high — неполный расчёт не может быть выдан за
 надёжный сигнал.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,7 +35,7 @@ class RiskFilterConfig(BaseModel):
     gap_risk_pct: float = 5.0
     overextension_ema20_pct: float = 15.0
     liquidity_min_avg_volume: float = 500_000
-    news_risk_sentiment: float = -0.3  # используется на подэтапе 2.1
+    news_risk_sentiment: float = -0.3
 
 
 def load_risk_config(path: str | Path | None = None) -> RiskFilterConfig:
@@ -67,12 +67,13 @@ class RiskAssessment(BaseModel):
 
 # Потолок допустимого статуса для каждого флага (ТЗ раздел 9).
 _FLAG_CEILINGS: dict[str, TradeStatus] = {
-    "high_volatility": TradeStatus.WATCH,      # допускает только WATCH/SELL
-    "event_risk": TradeStatus.BUY_ON_DIP,      # до BUY ON DIP/WATCH
+    "high_volatility": TradeStatus.WATCH,  # допускает только WATCH/SELL
+    "event_risk": TradeStatus.BUY_ON_DIP,  # до BUY ON DIP/WATCH
     "gap_risk": TradeStatus.BUY_ON_DIP,
-    "overextension": TradeStatus.BUY_ON_DIP,   # BUY → BUY ON DIP
-    "liquidity_risk": TradeStatus.WATCH,       # блокирует BUY (Rule Engine → WATCH)
-    "missing_data": TradeStatus.WATCH,         # максимум WATCH, никогда BUY/BUY ON DIP
+    "overextension": TradeStatus.BUY_ON_DIP,  # BUY → BUY ON DIP
+    "liquidity_risk": TradeStatus.WATCH,  # блокирует BUY (Rule Engine → WATCH)
+    "missing_data": TradeStatus.WATCH,  # максимум WATCH, никогда BUY/BUY ON DIP
+    "news_risk": TradeStatus.WATCH,
 }
 
 
@@ -94,6 +95,8 @@ def compute_risk(
     *,
     next_earnings_date: date | None = None,
     fundamentals: Fundamentals | None = None,
+    news_sentiment: float | None = None,
+    missing_factors: list[str] | None = None,
     today: date | None = None,
     config: RiskFilterConfig | None = None,
 ) -> RiskAssessment:
@@ -169,12 +172,25 @@ def compute_risk(
                 )
             )
 
+    if news_sentiment is not None and news_sentiment < cfg.news_risk_sentiment:
+        flags.append(
+            RiskFlag(
+                flag="news_risk",
+                reason=(
+                    f"Новостный сентимент {news_sentiment:.2f} < "
+                    f"порога {cfg.news_risk_sentiment:.2f}"
+                ),
+                value=news_sentiment,
+            )
+        )
+
     # missing_data: не хватает ключевых входных данных (цена/объём/fundamentals)
     missing_reasons = list(features.missing)
     if features.avg_volume_20d is None:
         missing_reasons.append("avg_volume_20d")
     if fundamentals is not None and fundamentals.is_incomplete:
         missing_reasons.append("fundamentals")
+    missing_reasons.extend(missing_factors or [])
     if missing_reasons:
         flags.append(
             RiskFlag(

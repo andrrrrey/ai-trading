@@ -8,10 +8,10 @@ Final Score = 0.20·Momentum + 0.15·Growth + 0.15·Fundamentals + 0.15·RelStre
 «половина вверх» (не банковское — прямое требование ТЗ). Все интерфейсы (Telegram,
 БД, AI) работают уже с округлёнными значениями.
 
-Если какой-то фактор недоступен (напр. Catalysts в Этапе 1 до подключения
-новостей, 2.1), веса ренормируются по доступным факторам — значение не
-выдумывается, но набор помечается is_incomplete (честность, ТЗ 6.6).
+Если хотя бы один фактор недоступен, Final Score не рассчитывается. Это сохраняет
+утверждённые веса неизменными и не выдаёт неполный набор за полный расчёт.
 """
+
 from __future__ import annotations
 
 import math
@@ -49,33 +49,23 @@ def compute_final_score(
     weights = cfg.final_score_weights.as_dict()
     raw_scores = factor_scores.as_dict()  # {name: float | None}
 
-    available = [
-        (name, raw_scores[name], weights[name])
-        for name in FACTOR_NAMES
-        if raw_scores[name] is not None
-    ]
-    total_weight = sum(w for _, _, w in available)
-
-    if not available or total_weight == 0:
+    missing = [name for name in FACTOR_NAMES if raw_scores[name] is None]
+    if missing:
         final_value: int | None = None
-        weights_used = {name: 0.0 for name in FACTOR_NAMES}
+        weights_used = weights
     else:
-        weighted_sum = sum(score * w for _, score, w in available) / total_weight
+        weighted_sum = sum(raw_scores[name] * weights[name] for name in FACTOR_NAMES)
         final_value = max(0, min(100, round_half_up(weighted_sum)))
-        weights_used = {
-            name: (weights[name] / total_weight if raw_scores[name] is not None else 0.0)
-            for name in FACTOR_NAMES
-        }
+        weights_used = weights
 
     rounded_factors = {
         name: (None if raw_scores[name] is None else round_half_up(raw_scores[name]))
         for name in FACTOR_NAMES
     }
-    missing = [name for name in FACTOR_NAMES if raw_scores[name] is None]
     rule = (
         "взвешенная сумма факторов "
         + " + ".join(f"{weights[n]:.2f}·{n}" for n in FACTOR_NAMES)
-        + (f"; веса ренормированы (нет: {', '.join(missing)})" if missing else "")
+        + (f"; Final Score не рассчитан (нет: {', '.join(missing)})" if missing else "")
     )
 
     return FinalScore(

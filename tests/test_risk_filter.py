@@ -1,4 +1,5 @@
 """Тесты базового Risk Filter (ТЗ раздел 9, DoD подэтапа 1.6)."""
+
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
@@ -14,9 +15,17 @@ FETCHED = datetime(2025, 9, 18, tzinfo=UTC)
 def feat(**kw) -> FeatureSet:
     """«Здоровые» фичи без единого флага риска; переопределяем нужное поле."""
     base = dict(
-        price=100.0, ema20=95.0, ema50=90.0, ema200=85.0, rsi14=60.0,
-        atr14=1.0, atr_pct=0.01, volume_ratio20=1.2, avg_volume_20d=1_000_000.0,
-        gap_pct=1.0, distance_to_ema20=5.0,
+        price=100.0,
+        ema20=95.0,
+        ema50=90.0,
+        ema200=85.0,
+        rsi14=60.0,
+        atr14=1.0,
+        atr_pct=0.01,
+        volume_ratio20=1.2,
+        avg_volume_20d=1_000_000.0,
+        gap_pct=1.0,
+        distance_to_ema20=5.0,
     )
     base.update(kw)
     return FeatureSet(ticker="AAPL", **base)
@@ -61,16 +70,14 @@ def test_overextension_boundary_and_ceiling():
 def test_liquidity_risk_makes_high_and_watch():
     r = compute_risk(feat(avg_volume_20d=400_000.0))
     assert "liquidity_risk" in r.flag_names()
-    assert r.risk_level == "high"           # liquidity_risk → high
+    assert r.risk_level == "high"  # liquidity_risk → high
     assert r.allowed_max_status == TradeStatus.WATCH
     assert "liquidity_risk" not in compute_risk(feat(avg_volume_20d=600_000.0)).flag_names()
 
 
 def test_event_risk_within_business_days():
     # today=Пн 2025-09-15, earnings=Ср 2025-09-17 → 2 раб. дня <= 3
-    r = compute_risk(
-        feat(), next_earnings_date=date(2025, 9, 17), today=date(2025, 9, 15)
-    )
+    r = compute_risk(feat(), next_earnings_date=date(2025, 9, 17), today=date(2025, 9, 15))
     names = r.flag_names()
     assert "event_risk" in names
     ev = next(f for f in r.active_flags if f.flag == "event_risk")
@@ -79,9 +86,7 @@ def test_event_risk_within_business_days():
 
 
 def test_event_risk_far_earnings_no_flag():
-    r = compute_risk(
-        feat(), next_earnings_date=date(2025, 10, 15), today=date(2025, 9, 15)
-    )
+    r = compute_risk(feat(), next_earnings_date=date(2025, 10, 15), today=date(2025, 9, 15))
     assert "event_risk" not in r.flag_names()
 
 
@@ -96,9 +101,7 @@ def test_missing_data_from_missing_volume():
 
 
 def test_missing_data_from_incomplete_fundamentals():
-    fund = Fundamentals(
-        ticker="AAPL", source="fmp", fetched_at=FETCHED, is_incomplete=True
-    )
+    fund = Fundamentals(ticker="AAPL", source="fmp", fetched_at=FETCHED, is_incomplete=True)
     r = compute_risk(feat(), fundamentals=fund)
     assert "missing_data" in r.flag_names()
     assert r.risk_level == "high"
@@ -109,6 +112,19 @@ def test_missing_data_from_incomplete_features():
     assert "missing_data" in r.flag_names()
     reason = next(f for f in r.active_flags if f.flag == "missing_data").reason
     assert "rsi14" in reason
+
+
+def test_missing_factor_blocks_signal_as_missing_data():
+    r = compute_risk(feat(), missing_factors=["valuation"])
+    assert "missing_data" in r.flag_names()
+    assert r.risk_level == "high"
+    assert r.allowed_max_status == TradeStatus.WATCH
+
+
+def test_negative_news_sets_news_risk_and_watch_ceiling():
+    r = compute_risk(feat(), news_sentiment=-1.0)
+    assert "news_risk" in r.flag_names()
+    assert r.allowed_max_status == TradeStatus.WATCH
 
 
 # --------------------------------------------------------------------------- #
@@ -130,5 +146,5 @@ def test_three_flags_is_high():
 def test_reasons_and_values_present():
     r = compute_risk(feat(atr_pct=0.08))
     flag = r.active_flags[0]
-    assert flag.reason                       # причина показана
-    assert flag.value is not None            # конкретное значение показано
+    assert flag.reason  # причина показана
+    assert flag.value is not None  # конкретное значение показано

@@ -1,4 +1,5 @@
 """Тесты базового Telegram-интерфейса (ТЗ раздел 12, DoD подэтапа 1.9)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,14 +10,13 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from app.bot.service import BotService, parse_ticker
 from app.db.models import Signal
 from app.db.session import create_all
 from app.ingestion.base_client import SourceError
 from app.ingestion.normalization import PriceBar, PriceHistory, QualityReport
-from app.ingestion.schemas import Earnings, Fundamentals
+from app.ingestion.schemas import Earnings, Filing, Fundamentals, NewsItem
 from app.ingestion.service import MarketData
 from app.ingestion.source_router import AllSourcesUnavailableError
 from app.pipeline import Pipeline
@@ -35,8 +35,15 @@ def _price_history(ticker: str, n: int, base: float) -> PriceHistory:
         low = min(open_, close) - 1.0
         bars.append(
             PriceBar(
-                ticker=ticker, date=d, open=open_, high=high, low=low, close=close,
-                volume=2_000_000 + (i % 5) * 100_000, source="fake", fetched_at=FETCHED,
+                ticker=ticker,
+                date=d,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=2_000_000 + (i % 5) * 100_000,
+                source="fake",
+                fetched_at=FETCHED,
             )
         )
         prev = close
@@ -49,12 +56,40 @@ def _market(ticker: str, n: int = 260, base: float = 100.0) -> MarketData:
         ticker=ticker,
         price_history=_price_history(ticker, n, base),
         fundamentals=Fundamentals(
-            ticker=ticker, source="fake", fetched_at=FETCHED, period="annual",
-            revenue_growth=0.12, eps_growth=0.18, eps=5.0, gross_margin=0.42,
-            debt_equity=1.1, pe=28.0, forward_pe=24.0,
+            ticker=ticker,
+            source="fake",
+            fetched_at=FETCHED,
+            period="annual",
+            revenue_growth=0.12,
+            eps_growth=0.18,
+            eps=5.0,
+            gross_margin=0.42,
+            debt_equity=1.1,
+            pe=28.0,
+            forward_pe=24.0,
         ),
-        earnings=Earnings(ticker=ticker, next_earnings_date=None, source="fake",
-                          fetched_at=FETCHED),
+        earnings=Earnings(
+            ticker=ticker, next_earnings_date=None, source="fake", fetched_at=FETCHED
+        ),
+        news=[
+            NewsItem(
+                ticker=ticker,
+                title="Company beats estimates and raises guidance",
+                published_at=FETCHED,
+                source="fake",
+                fetched_at=FETCHED,
+            )
+        ],
+        filings=[
+            Filing(
+                ticker=ticker,
+                form="8-K",
+                filed_date=FETCHED.date(),
+                accession_number=f"{ticker}-8K",
+                source="sec_edgar",
+                fetched_at=FETCHED,
+            )
+        ],
         quality={},
         is_incomplete=False,
     )
@@ -80,11 +115,11 @@ class FakeIngestion:
 
 
 @pytest_asyncio.fixture
-async def session_factory():
+async def session_factory(tmp_path):
+    db_path = tmp_path / "bot-tests.db"
     engine = create_async_engine(
-        "sqlite+aiosqlite://",
+        f"sqlite+aiosqlite:///{db_path}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     await create_all(engine)
     yield async_sessionmaker(engine, expire_on_commit=False)
@@ -101,8 +136,15 @@ def make_service(session_factory, markets, **kw) -> BotService:
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "text,expected",
-    [("NVDA", "NVDA"), ("$nvda", "NVDA"), ("aapl", "AAPL"),
-     ("hello world", None), ("TOOLONG", None), ("", None), ("/start", None)],
+    [
+        ("NVDA", "NVDA"),
+        ("$nvda", "NVDA"),
+        ("aapl", "AAPL"),
+        ("hello world", None),
+        ("TOOLONG", None),
+        ("", None),
+        ("/start", None),
+    ],
 )
 def test_parse_ticker(text, expected):
     assert parse_ticker(text) == expected
@@ -118,8 +160,11 @@ async def test_analyze_returns_message_and_saves_signal(session_factory):
     assert signal_id is not None
     assert "NVDA" in text
     assert "Final Score" in text
-    assert "Momentum" in text          # 7 факторов в сообщении
-    assert "Не является" in text       # дисклеймер
+    assert "Momentum" in text  # 7 факторов в сообщении
+    assert "Расчёт:" in text
+    assert "формула" in text
+    assert "Источники: fake, sec_edgar" in text
+    assert "Не является" in text  # дисклеймер
 
     async with session_factory() as s:
         count = await s.scalar(select(func.count()).select_from(Signal))
@@ -136,9 +181,7 @@ async def test_unknown_ticker_returns_error_no_crash(session_factory):
 
 
 async def test_sources_unavailable_returns_service_message(session_factory):
-    service = make_service(
-        session_factory, {"NVDA": _market("NVDA")}, unavailable={"NVDA"}
-    )
+    service = make_service(session_factory, {"NVDA": _market("NVDA")}, unavailable={"NVDA"})
     text, signal_id = await service.analyze("NVDA")
     assert signal_id is None
     assert "временно недоступен" in text
@@ -163,6 +206,8 @@ async def test_sections_render_from_stored_signal(session_factory):
     metrics = await service.section(signal_id, "metrics")
     risk = await service.section(signal_id, "risk")
     assert "расшифровка" in details.lower()
+    assert "SEC filings: 1" in details
+    assert "Company beats estimates" in details
     assert "RSI14" in metrics
     assert "Risk Filter" in risk
 
@@ -196,9 +241,9 @@ async def test_concurrent_requests_do_not_mix(session_factory):
     )
     ids = [sid for _, sid in results]
 
-    assert len(set(ids)) == 3                      # разные signal_id
+    assert len(set(ids)) == 3  # разные signal_id
     for (text, _sid), ticker in zip(results, ("NVDA", "AAPL", "TSLA"), strict=False):
-        assert ticker in text                      # каждый ответ про свой тикер
+        assert ticker in text  # каждый ответ про свой тикер
 
     async with session_factory() as s:
         rows = (await s.execute(select(Signal))).scalars().all()
