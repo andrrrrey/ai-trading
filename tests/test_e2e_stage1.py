@@ -24,13 +24,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.bot.service import BotService
 from app.db.models import Signal
-from app.db.repository import list_signals, recompute_from_snapshot
+from app.db.repository import list_signals, recompute_from_snapshot, replay_signal
 from app.db.session import create_all
 from app.ingestion import IngestionService
 from app.ingestion.alpaca_client import AlpacaClient
 from app.ingestion.fmp_client import FMPClient
 from app.ingestion.source_router import SourceRouter
-from app.monitoring.source_health import SourceHealthMonitor
+from app.monitoring.source_health import SourceHealthMonitor, latest_data_mode
 from app.pipeline import Pipeline
 
 FMP_HIST = re.compile(r".*/stable/historical-price-eod/full")
@@ -230,3 +230,107 @@ async def test_all_sources_down_honest_message(session_factory):
     async with session_factory() as s:
         count = await s.scalar(select(func.count()).select_from(Signal))
     assert count == 0  # ложный/частичный расчёт не сохранён
+
+
+# --------------------------------------------------------------------------- #
+# Таймаут / сетевой сбой основного источника → резерв (чек-лист 1.1.7, 1.10.5)
+# --------------------------------------------------------------------------- #
+@respx.mock
+async def test_fmp_timeout_switches_to_reserve_and_mode_is_visible(session_factory):
+    respx.get(FMP_HIST).mock(side_effect=httpx.ReadTimeout("fmp timeout"))
+    respx.get(ALPACA_BARS).mock(return_value=httpx.Response(200, json=_alpaca_bars()))
+    _mock_fmp_fundamentals()
+    monitor = SourceHealthMonitor(session_factory)
+    service = build_service(session_factory, monitor)
+
+    text, sid = await service.analyze("AAPL")
+
+    assert sid is not None
+    assert "РЕЗЕРВНЫЙ" in text and "alpaca" in text
+    assert monitor.snapshot()["fmp"]["last_error"].startswith("timeout")
+
+    mode = await latest_data_mode(session_factory)
+    assert mode["mode"] == "reserve"
+    assert mode["price_history"]["source"] == "alpaca"
+    assert mode["price_history"]["mode"] == "reserve"
+    assert mode["fundamentals"]["mode"] == "primary"
+
+
+@respx.mock
+async def test_fmp_network_error_without_reserve_gives_clear_message(session_factory):
+    respx.get(FMP_HIST).mock(side_effect=httpx.ConnectError("refused"))
+    _mock_fmp_fundamentals()
+    router = SourceRouter(fmp=FMPClient(api_key="K", max_retries=1))
+    service = BotService(
+        Pipeline(IngestionService(router), session_factory), session_factory
+    )
+
+    text, sid = await service.analyze("AAPL")
+
+    assert sid is None
+    assert "сетевая ошибка" in text and "FMP" in text
+    assert "не найден" not in text
+
+
+# --------------------------------------------------------------------------- #
+# Неизвестный тикер: FMP отвечает 200 и [] → понятная ошибка, запись не создаётся
+# --------------------------------------------------------------------------- #
+@respx.mock
+async def test_unknown_ticker_with_real_clients(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=[]))
+    respx.get(ALPACA_BARS).mock(return_value=httpx.Response(200, json={"bars": None}))
+    for pattern in (FMP_RATIOS, FMP_METRICS, FMP_GROWTH, FMP_EARNINGS, FMP_NEWS):
+        respx.get(pattern).mock(return_value=httpx.Response(200, json=[]))
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    text, sid = await service.analyze("ZZZZQ")
+
+    assert sid is None
+    assert "Тикер ZZZZQ не найден" in text
+    async with session_factory() as s:
+        count = await s.scalar(select(func.count()).select_from(Signal))
+    assert count == 0
+
+
+# --------------------------------------------------------------------------- #
+# Ограничение тарифа / неверный ключ → не выдаётся за «тикер не найден»
+# --------------------------------------------------------------------------- #
+@respx.mock
+async def test_fmp_plan_restriction_message(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(FMP_METRICS).mock(return_value=httpx.Response(402, json={"Error": "Premium"}))
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    text, sid = await service.analyze("AAPL")
+
+    assert sid is None
+    assert "HTTP 402" in text and "тариф" in text
+    assert "не найден" not in text
+
+
+# --------------------------------------------------------------------------- #
+# Полное воспроизведение: исходные данные → метрики → факторы → Score → Risk
+# --------------------------------------------------------------------------- #
+@respx.mock
+async def test_replay_from_stored_raw_inputs(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    service = build_service(session_factory, SourceHealthMonitor())
+    _, sid = await service.analyze("AAPL")
+
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    raw = signal.raw_input_snapshot["raw_inputs"]
+    assert len(raw["price_history"]["bars"]) == 260  # все бары, на которых шёл расчёт
+    assert raw["benchmark"]["ticker"] == "SPY"
+    assert raw["news"][0]["title"].startswith("Company beats")
+    assert raw["calc_date"]
+
+    replay = replay_signal(signal)
+    assert replay.final.final_score == signal.final_score
+    assert replay.final.factor_scores == {
+        name: getattr(signal.factor_scores, name) for name in replay.final.factor_scores
+    }
+    assert replay.features.model_dump(mode="json") == signal.raw_input_snapshot["features"]
+    assert [f.model_dump() for f in replay.risk.active_flags] == signal.risk_flags

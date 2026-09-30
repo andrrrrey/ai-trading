@@ -13,23 +13,30 @@ AI-объяснение подключаются на Этапе 2 (2.2, 2.3); �
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
+from app.calculation import build_raw_inputs, calculate
 from app.db.repository import save_signal, upsert_active_formula_version
-from app.features.catalysts import analyze_catalysts
-from app.features.indicators import compute_features
 from app.ingestion.base_client import SourceError
-from app.risk import compute_risk
+from app.ingestion.normalization import NEW_YORK
+from app.ingestion.source_router import source_mode
 from app.scoring import (
     ScoringConfig,
     active_formula_version,
-    compute_factor_scores,
-    compute_final_score,
     load_scoring_config,
 )
 
 logger = logging.getLogger(__name__)
 
 BENCHMARK_TICKER = "SPY"
+
+
+def _source_entry(data_kind: str, source: str | None, fetched_at: datetime | None) -> dict:
+    return {
+        "source": source,
+        "mode": source_mode(data_kind, source),
+        "fetched_at": fetched_at.isoformat() if fetched_at else None,
+    }
 
 
 class Pipeline:
@@ -49,29 +56,56 @@ class Pipeline:
         except SourceError:
             logger.warning("бенчмарк %s недоступен — Relative Strength = н/д", BENCHMARK_TICKER)
 
-        features = compute_features(market.price_history, benchmark)
-        catalysts = analyze_catalysts(market.news, market.filings)
-        factor_scores = compute_factor_scores(
-            features,
-            market.fundamentals,
-            self._config,
-            news_sentiment=catalysts.sentiment,
-        )
-        final = compute_final_score(factor_scores, self._config)
-        missing_factors = [name for name, value in final.factor_scores.items() if value is None]
-        missing_risk_inputs = list(missing_factors)
-        if market.quality.get("earnings") and market.quality["earnings"].is_incomplete:
-            missing_risk_inputs.append("earnings")
-        risk = compute_risk(
-            features,
-            next_earnings_date=market.earnings.next_earnings_date,
+        # Дата расчёта фиксируется в торговой зоне и сохраняется: от неё зависит
+        # event_risk, и повтор расчёта по истории использует ту же дату.
+        calc_date = datetime.now(NEW_YORK).date()
+        earnings_q = market.quality.get("earnings")
+        earnings_available = not (earnings_q and earnings_q.is_incomplete)
+        inputs = dict(
+            price_history=market.price_history,
+            benchmark=benchmark,
             fundamentals=market.fundamentals,
-            news_sentiment=catalysts.sentiment,
-            missing_factors=missing_risk_inputs,
+            next_earnings_date=market.earnings.next_earnings_date,
+            earnings_available=earnings_available,
+            news=market.news,
+            filings=market.filings,
+            calc_date=calc_date,
         )
+        result = calculate(**inputs, config=self._config)
+        raw_inputs = build_raw_inputs(
+            **inputs,
+            quality={name: q.model_dump(mode="json") for name, q in market.quality.items()},
+        )
+        features, final, risk = result.features, result.final, result.risk
         # Провизорный статус в Этапе 1 — потолок из Risk Filter; реальный статус
-        # даст Rule Engine на подэтапе 2.2.
+        # даст Rule Engine на подэтапе 2.2. Пользователю он не показывается.
         status = risk.allowed_max_status
+
+        price_source = market.price_history.source
+        news_sources = sorted({item.source for item in market.news})
+        source_context = {
+            "price_history": _source_entry(
+                "price_history", price_source, market.price_history.fetched_at
+            ),
+            "fundamentals": _source_entry(
+                "fundamentals", market.fundamentals.source, market.fundamentals.fetched_at
+            ),
+            "earnings": _source_entry(
+                "earnings", market.earnings.source, market.earnings.fetched_at
+            ),
+            "benchmark": _source_entry(
+                "price_history",
+                benchmark.source if benchmark else None,
+                benchmark.fetched_at if benchmark else None,
+            ),
+            "news": news_sources,
+            "news_mode": source_mode("news", news_sources[0]) if news_sources else "unavailable",
+            "filings": sorted({item.source for item in market.filings}),
+        }
+        modes = [
+            entry["mode"] for entry in source_context.values() if isinstance(entry, dict)
+        ] + [source_context["news_mode"]]
+        source_context["mode"] = "reserve" if "reserve" in modes else "primary"
 
         async with self._session_factory() as session:
             await upsert_active_formula_version(session, active_formula_version(self._config))
@@ -83,31 +117,17 @@ class Pipeline:
                 risk=risk,
                 status=status,
                 price=features.price,
-                news_sentiment=catalysts.sentiment,
-                catalyst_context=catalysts.model_dump(mode="json"),
+                news_sentiment=result.catalysts.sentiment,
+                catalyst_context=result.catalysts.model_dump(mode="json"),
                 formula_snapshot=active_formula_version(self._config).snapshot(),
-                source_context={
-                    "price_history": {
-                        "source": market.price_history.source,
-                        "fetched_at": market.price_history.fetched_at.isoformat(),
-                    },
-                    "fundamentals": {
-                        "source": market.fundamentals.source,
-                        "fetched_at": market.fundamentals.fetched_at.isoformat(),
-                    },
-                    "earnings": {
-                        "source": market.earnings.source,
-                        "fetched_at": market.earnings.fetched_at.isoformat(),
-                    },
-                    "news": sorted({item.source for item in market.news}),
-                    "filings": sorted({item.source for item in market.filings}),
-                },
+                source_context=source_context,
+                raw_inputs=raw_inputs,
             )
             logger.info(
-                "signal saved id=%s ticker=%s final=%s status=%s",
+                "signal saved id=%s ticker=%s final=%s mode=%s",
                 signal.id,
                 ticker,
                 final.final_score,
-                status.value,
+                source_context["mode"],
             )
             return signal.id

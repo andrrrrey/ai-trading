@@ -36,9 +36,13 @@ app/
   features/            # индикаторы и детерминированные Catalysts
   scoring/             # 7 Factor Scores и Final Score
   risk/                # Risk Filter
+  calculation.py       # расчётное ядро (общее для живого расчёта и повтора)
 config/thresholds.yaml # веса Score, пороги Risk/Rule Engine (v1)
+scripts/               # live-smoke и воспроизведение расчёта по истории
 tests/                 # pytest
-docs/acceptance-evidence/  # артефакты приёмки по подэтапам
+docs/FORMULAS_AND_API.md       # формулы, источники, ошибки, /health, бот
+docs/THIRD_PARTY_LICENSES.md   # сторонние компоненты и лицензии
+docs/acceptance-evidence/      # артефакты приёмки по подэтапам
 ```
 
 ## Запуск
@@ -76,4 +80,8 @@ Compose автоматически применяет миграции, запу
 | Finnhub | резерв новостей | `FINNHUB_API_KEY` |
 
 Резервные источники (Alpaca/Finnhub) подключаются автоматически, если заданы
-ключи; иначе `source_router` работает только на основном источнике.
+ключи; иначе `source_router` работает только на основном источнике. Резерв
+включается при любом сбое основного (таймаут, сеть, HTTP-ошибка); режим
+(основной/резервный) виден в ответе бота и в `/health`.
+
+Воспроизведение сохранённого расчёта: `python scripts/replay_signal.py <signal_id>`.

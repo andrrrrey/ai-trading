@@ -11,8 +11,17 @@ import re
 
 from app.bot import templates
 from app.db.repository import get_signal, list_signals
-from app.ingestion.base_client import SourceError
-from app.ingestion.source_router import AllSourcesUnavailableError
+from app.ingestion.base_client import (
+    ERROR_AUTH,
+    ERROR_INVALID_RESPONSE,
+    ERROR_NETWORK,
+    ERROR_NO_DATA,
+    ERROR_NOT_FOUND,
+    ERROR_RATE_LIMIT,
+    ERROR_TIMEOUT,
+    SourceError,
+)
+from app.ingestion.source_router import AllSourcesUnavailableError, TickerNotFoundError
 from app.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
@@ -25,6 +34,44 @@ WELCOME = (
     "Команда /history NVDA — последние сигналы по тикеру.\n\n"
     + templates.DISCLAIMER
 )
+
+
+_SOURCE_TITLES = {
+    "fmp": "FMP",
+    "sec_edgar": "SEC EDGAR",
+    "alpaca": "Alpaca",
+    "finnhub": "Finnhub",
+}
+
+
+def source_error_message(ticker: str, exc: SourceError) -> str:
+    """Понятное сообщение об ошибке источника — никогда не торговый вывод."""
+    ticker = ticker.upper()
+    if isinstance(exc, TickerNotFoundError):
+        return f"❓ Тикер {ticker} не найден у источников данных. Проверьте написание."
+    source = _SOURCE_TITLES.get(exc.source, exc.source or "источник")
+    tail = "\nРасчёт не выполнен и не сохранён."
+    if isinstance(exc, AllSourcesUnavailableError):
+        source = f"{source} и резервный источник"
+    if exc.kind == ERROR_TIMEOUT:
+        text = f"⏱ {source}: превышено время ожидания ответа. Попробуйте позже."
+    elif exc.kind == ERROR_NETWORK:
+        text = f"🔌 {source}: источник недоступен (сетевая ошибка). Попробуйте позже."
+    elif exc.kind == ERROR_RATE_LIMIT:
+        text = f"⏳ {source}: превышен лимит запросов API. Повторите через минуту."
+    elif exc.kind == ERROR_AUTH:
+        text = (
+            f"🔑 {source} отклонил запрос (HTTP {exc.status_code}): ключ API "
+            "недействителен или тариф не включает эти данные. Сообщите администратору."
+        )
+    elif exc.kind == ERROR_INVALID_RESPONSE:
+        text = f"⚠️ {source}: получен некорректный ответ API."
+    elif exc.kind in (ERROR_NO_DATA, ERROR_NOT_FOUND):
+        text = f"📭 {source}: нет данных по {ticker}."
+    else:
+        code = f" (HTTP {exc.status_code})" if exc.status_code else ""
+        text = f"🔌 {source}: ошибка API{code}. Сервис данных временно недоступен."
+    return text + tail
 
 
 def parse_ticker(text: str) -> str | None:
@@ -46,13 +93,9 @@ class BotService:
         """Полный расчёт по тикеру. Возвращает (текст, signal_id | None при ошибке)."""
         try:
             signal_id = await self._pipeline.run(ticker)
-        except AllSourcesUnavailableError:
-            return ("🔌 Сервис данных временно недоступен, попробуйте позже.", None)
-        except SourceError:
-            return (
-                f"❓ Не удалось найти тикер {ticker.upper()}. Проверьте написание.",
-                None,
-            )
+        except SourceError as exc:
+            logger.warning("расчёт %s остановлен: %s (kind=%s)", ticker, exc, exc.kind)
+            return (source_error_message(ticker, exc), None)
         except Exception:  # noqa: BLE001 — техошибка не должна ронять бот
             logger.exception("ошибка расчёта по тикеру %s", ticker)
             return ("⚠️ Внутренняя ошибка расчёта. Попробуйте позже.", None)

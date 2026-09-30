@@ -128,6 +128,8 @@ def test_health_endpoint_reflects_failure_and_recovery():
     assert body["sources_ok"] is False
     assert body["sources"]["fmp"]["status"] == "error"
     assert body["sources"]["fmp"]["last_error"] == "invalid api key"
+    assert body["sources"]["fmp"]["role"] == "primary"
+    assert "data_mode" in body
 
     # восстановление источника
     asyncio.run(monitor.record(ok("fmp")))
