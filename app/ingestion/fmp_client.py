@@ -4,6 +4,7 @@
 Клиент возвращает DTO с проставленными ``source="fmp"`` и ``fetched_at``.
 Глубокая нормализация/валидация — подэтап 1.2.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
@@ -74,9 +75,7 @@ class FMPClient(BaseSourceClient):
         )
 
     async def get_price_history(self, ticker: str) -> RawPriceHistory:
-        data = await self._get_json(
-            "/stable/historical-price-eod/full", params={"symbol": ticker}
-        )
+        data = await self._get_json("/stable/historical-price-eod/full", params={"symbol": ticker})
         rows = _as_rows(data)
         fetched = _now()
         bars = [
@@ -94,9 +93,7 @@ class FMPClient(BaseSourceClient):
             for row in rows
             if _to_date(row.get("date")) is not None
         ]
-        return RawPriceHistory(
-            ticker=ticker, bars=bars, source=self.source, fetched_at=fetched
-        )
+        return RawPriceHistory(ticker=ticker, bars=bars, source=self.source, fetched_at=fetched)
 
     async def get_profile(self, ticker: str) -> dict[str, Any]:
         data = await self._get_json("/stable/profile", params={"symbol": ticker})
@@ -111,12 +108,8 @@ class FMPClient(BaseSourceClient):
         return _first_row(data, source=self.source, ticker=ticker, what="key-metrics")
 
     async def get_income_growth(self, ticker: str) -> dict[str, Any]:
-        data = await self._get_json(
-            "/stable/income-statement-growth", params={"symbol": ticker}
-        )
-        return _first_row(
-            data, source=self.source, ticker=ticker, what="income-statement-growth"
-        )
+        data = await self._get_json("/stable/income-statement-growth", params={"symbol": ticker})
+        return _first_row(data, source=self.source, ticker=ticker, what="income-statement-growth")
 
     async def get_fundamentals(self, ticker: str, period: str = "annual") -> Fundamentals:
         """Композиция ratios + key-metrics + income-statement-growth.
@@ -124,9 +117,7 @@ class FMPClient(BaseSourceClient):
         Все три запроса используют один и тот же ``period`` (ТЗ 6.6) — Revenue
         Growth и EPS Growth не смешивают квартальные и годовые данные.
         """
-        ratios = await self._get_json(
-            "/stable/ratios", params={"symbol": ticker, "period": period}
-        )
+        ratios = await self._get_json("/stable/ratios", params={"symbol": ticker, "period": period})
         metrics = await self._get_json(
             "/stable/key-metrics", params={"symbol": ticker, "period": period}
         )
@@ -145,14 +136,17 @@ class FMPClient(BaseSourceClient):
             period=period,
             revenue_growth=_to_float(g.get("growthRevenue")),
             eps_growth=_to_float(g.get("growthEPS")),
-            eps=_to_float(m.get("eps") or r.get("eps")),
-            gross_margin=_to_float(
-                r.get("grossProfitMargin") or m.get("grossProfitMargin")
-            ),
+            # В stable API FMP EPS публикуется как netIncomePerShare в ratios.
+            # Старые имена оставлены как fallback для совместимости с моками и
+            # предыдущими версиями API.
+            eps=_to_float(r.get("netIncomePerShare") or m.get("eps") or r.get("eps")),
+            gross_margin=_to_float(r.get("grossProfitMargin") or m.get("grossProfitMargin")),
             debt_equity=_to_float(
-                r.get("debtEquityRatio") or m.get("debtToEquity")
+                r.get("debtToEquityRatio") or r.get("debtEquityRatio") or m.get("debtToEquity")
             ),
-            pe=_to_float(r.get("priceEarningsRatio") or m.get("peRatio")),
+            pe=_to_float(
+                r.get("priceToEarningsRatio") or r.get("priceEarningsRatio") or m.get("peRatio")
+            ),
             forward_pe=_to_float(m.get("forwardPE")),
             source=self.source,
             fetched_at=_now(),
@@ -228,7 +222,6 @@ def _next_earnings_date(rows: list[dict[str, Any]]) -> date | None:
     future = sorted(
         d
         for row in rows
-        if (d := _to_date(row.get("date") or row.get("epsReportedDate"))) is not None
-        and d >= today
+        if (d := _to_date(row.get("date") or row.get("epsReportedDate"))) is not None and d >= today
     )
     return future[0] if future else None

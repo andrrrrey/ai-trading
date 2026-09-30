@@ -4,6 +4,7 @@
 причинами, история. Полный шаблон КП со статусом BUY/SELL и AI-объяснением —
 подэтап 2.4. Каждое сообщение заканчивается дисклеймером (ТЗ раздел 0, 12).
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -48,10 +49,24 @@ def _factor_line(signal: Signal) -> str:
     return " · ".join(parts[:4]) + "\n" + " · ".join(parts[4:])
 
 
+def _source_line(signal: Signal) -> str:
+    sources = (signal.raw_input_snapshot or {}).get("sources", {})
+    names: set[str] = set()
+    for value in sources.values():
+        if isinstance(value, dict) and value.get("source"):
+            names.add(str(value["source"]))
+        elif isinstance(value, list):
+            names.update(str(item) for item in value if item)
+    return ", ".join(sorted(names)) or "н/д"
+
+
 def render_main(signal: Signal) -> str:
     flags = signal.risk_flags or []
     score = f"{signal.final_score}/100" if signal.final_score is not None else "неполный расчёт"
+    timestamp = signal.timestamp.strftime("%Y-%m-%d %H:%M UTC")
     lines = [f"📊 <b>{signal.ticker}</b> — Final Score: <b>{score}</b>"]
+    lines.append(f"Расчёт: {timestamp} · формула {signal.formula_version}")
+    lines.append(f"Источники: {_source_line(signal)}")
     if signal.price is not None:
         lines.append(f"Цена: ${signal.price:.2f}")
     lines += ["", _factor_line(signal), ""]
@@ -79,6 +94,19 @@ def render_details(signal: Signal, config: ScoringConfig | None = None) -> str:
         factor = getattr(scores, name)
         lines.append(f"\n<b>{title}: {_fmt(factor.score)}</b>")
         lines.append(factor.rule)
+        if name == "catalysts":
+            catalyst_context = snap.get("catalysts") or {}
+            lines.append(
+                "Источники: "
+                + ", ".join(catalyst_context.get("sources") or [])
+                + f"; новостей: {catalyst_context.get('news_count', 0)}"
+                + f"; SEC filings: {catalyst_context.get('filing_count', 0)}"
+            )
+            for evidence in (catalyst_context.get("evidence") or [])[:5]:
+                when = evidence.get("date") or "дата н/д"
+                lines.append(
+                    f"• {when} · {evidence.get('source', 'н/д')} · {evidence.get('title', 'н/д')}"
+                )
     lines += ["", DISCLAIMER]
     return "\n".join(lines)
 
@@ -89,22 +117,30 @@ def render_metrics(signal: Signal) -> str:
     fund = snap["fundamentals"]
     lines = [f"📈 <b>{signal.ticker}</b> — исходные метрики:", "", "<b>Технические:</b>"]
     tech = [
-        ("Цена", f.get("price"), 2), ("EMA20", f.get("ema20"), 2),
-        ("EMA50", f.get("ema50"), 2), ("EMA200", f.get("ema200"), 2),
-        ("RSI14", f.get("rsi14"), 1), ("MACD hist", f.get("macd_histogram"), 3),
-        ("ATR%", _pct(f.get("atr_pct")), 1), ("Volume Ratio", f.get("volume_ratio20"), 2),
-        ("Δ1д %", f.get("price_change_1d"), 2), ("Δ5д %", f.get("price_change_5d"), 2),
+        ("Цена", f.get("price"), 2),
+        ("EMA20", f.get("ema20"), 2),
+        ("EMA50", f.get("ema50"), 2),
+        ("EMA200", f.get("ema200"), 2),
+        ("RSI14", f.get("rsi14"), 1),
+        ("MACD hist", f.get("macd_histogram"), 3),
+        ("ATR%", _pct(f.get("atr_pct")), 1),
+        ("Volume Ratio", f.get("volume_ratio20"), 2),
+        ("Δ1д %", f.get("price_change_1d"), 2),
+        ("Δ5д %", f.get("price_change_5d"), 2),
         ("Δ20д %", f.get("price_change_20d"), 2),
         ("Rel.Strength 63д %", f.get("relative_strength_63d"), 2),
-        ("Gap %", f.get("gap_pct"), 2), ("Dist EMA20 %", f.get("distance_to_ema20"), 2),
+        ("Gap %", f.get("gap_pct"), 2),
+        ("Dist EMA20 %", f.get("distance_to_ema20"), 2),
     ]
     lines += [f"• {name}: {_fmt(val, d)}" for name, val, d in tech]
     lines += ["", "<b>Фундаментальные:</b>"]
     fnd = [
         ("Revenue Growth", _pct(fund.get("revenue_growth")), 1),
         ("EPS Growth", _pct(fund.get("eps_growth")), 1),
-        ("EPS", fund.get("eps"), 2), ("Gross Margin %", _pct(fund.get("gross_margin")), 1),
-        ("Debt/Equity", fund.get("debt_equity"), 2), ("P/E", fund.get("pe"), 1),
+        ("EPS", fund.get("eps"), 2),
+        ("Gross Margin %", _pct(fund.get("gross_margin")), 1),
+        ("Debt/Equity", fund.get("debt_equity"), 2),
+        ("P/E", fund.get("pe"), 1),
         ("Forward P/E", fund.get("forward_pe"), 1),
     ]
     lines += [f"• {name}: {_fmt(val, d)}" for name, val, d in fnd]

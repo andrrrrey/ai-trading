@@ -95,22 +95,28 @@ git clone <репозиторий> && cd ai-trading
 # 2. Заполнить .env (см. раздел 3)
 cp .env.example .env && nano .env
 
-# 3. Поднять базу и приложение
+# 3. Поднять PostgreSQL, применить миграции и запустить API + Telegram-бота
 docker compose up -d --build
 
-# 4. Применить миграции БД (создать таблицы)
-docker compose exec app alembic upgrade head
-
-# 5. Проверить, что сервис жив
+# 4. Проверить, что сервис жив
 curl http://localhost:8000/health
+
+# 5. Проверить контейнеры и логи бота
+docker compose ps
+docker compose logs --tail=100 bot
 ```
 
 `/health` вернёт статус приложения и по каждому источнику данных (статус, задержка,
 счётчик ошибок) — по нему видно, что ключи рабочие и данные приходят.
 
-> Telegram-бот запускается отдельным процессом (long polling, публичный домен не
-> нужен). На Этапе 1 в поставку входит служебный `/health`; полный запуск бота как
-> сервиса подключается на Этапе 2 (подэтап 2.7, развёртывание).
+> Telegram-бот запускается отдельным Compose-сервисом (long polling, публичный
+> домен не нужен). PostgreSQL не имеет внешнего порта, а API опубликован только
+> как `127.0.0.1:8000`; для удалённой проверки используйте SSH-туннель.
+
+```bash
+ssh -L 8000:127.0.0.1:8000 <user>@<server>
+# затем локально: curl http://127.0.0.1:8000/health
+```
 
 ---
 
@@ -134,7 +140,10 @@ curl http://localhost:8000/health
 ```bash
 pip install -e ".[dev]"
 pytest          # прогнать все автотесты
-ruff check app  # линтер
+ruff check app tests  # линтер
+
+# read-only проверка реальных источников и полной цепочки
+python scripts/stage1_acceptance_smoke.py AAPL
 ```
 
 ---

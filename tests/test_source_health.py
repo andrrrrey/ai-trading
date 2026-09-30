@@ -1,4 +1,5 @@
 """Тесты мониторинга источников (ТЗ раздел 13, DoD подэтапа 1.8)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -98,6 +99,20 @@ async def test_persists_to_source_health_table(session_factory):
     assert {r.status for r in rows} == {"ok", "error"}
 
 
+async def test_snapshot_from_db_is_shared_between_monitor_instances(session_factory):
+    writer = SourceHealthMonitor(session_factory=session_factory)
+    reader = SourceHealthMonitor(session_factory=session_factory)
+    await writer.record(err("sec_edgar", "rate limited"))
+    await writer.record(ok("fmp", 21.5))
+
+    snapshot = await reader.snapshot_from_db(expected_sources=("fmp", "sec_edgar"))
+
+    assert snapshot["fmp"]["status"] == "ok"
+    assert snapshot["fmp"]["last_latency_ms"] == 21.5
+    assert snapshot["sec_edgar"]["status"] == "error"
+    assert snapshot["sec_edgar"]["last_error"] == "rate limited"
+
+
 # --------------------------------------------------------------------------- #
 # /health endpoint: искусственный сбой виден, после восстановления — обновляется
 # --------------------------------------------------------------------------- #
@@ -109,7 +124,7 @@ def test_health_endpoint_reflects_failure_and_recovery():
     # искусственный сбой основного источника
     asyncio.run(monitor.record(err("fmp", "invalid api key")))
     body = client.get("/health").json()
-    assert body["status"] == "ok"          # само приложение живо
+    assert body["status"] == "ok"  # само приложение живо
     assert body["sources_ok"] is False
     assert body["sources"]["fmp"]["status"] == "error"
     assert body["sources"]["fmp"]["last_error"] == "invalid api key"

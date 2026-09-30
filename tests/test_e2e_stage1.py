@@ -8,6 +8,7 @@ IngestionService → Pipeline → БД → Telegram-рендер); мокиру�
 - полная недоступность → честное сообщение, без ложного расчёта;
 - значения в backend и в Telegram совпадают; воспроизводимость (повтор идентичен).
 """
+
 from __future__ import annotations
 
 import math
@@ -37,6 +38,7 @@ FMP_RATIOS = re.compile(r".*/stable/ratios")
 FMP_METRICS = re.compile(r".*/stable/key-metrics")
 FMP_GROWTH = re.compile(r".*/stable/income-statement-growth")
 FMP_EARNINGS = re.compile(r".*/stable/earnings")
+FMP_NEWS = re.compile(r".*/stable/news/stock")
 ALPACA_BARS = re.compile(r".*/v2/stocks/.+/bars")
 
 
@@ -49,10 +51,16 @@ def _fmp_hist(n: int = 260, base: float = 150.0) -> list[dict]:
         open_ = prev
         high = max(open_, close) + 1.2
         low = min(open_, close) - 1.2
-        rows.append({
-            "date": d.isoformat(), "open": round(open_, 2), "high": round(high, 2),
-            "low": round(low, 2), "close": round(close, 2), "volume": 5_000_000 + i,
-        })
+        rows.append(
+            {
+                "date": d.isoformat(),
+                "open": round(open_, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "close": round(close, 2),
+                "volume": 5_000_000 + i,
+            }
+        )
         prev = close
         d += timedelta(days=1)
     return list(reversed(rows))  # FMP отдаёт свежие сверху
@@ -65,26 +73,54 @@ def _alpaca_bars(n: int = 260, base: float = 150.0) -> dict:
     for i in range(n):
         close = base + i * 0.2 + 4.0 * math.sin(i / 7.0)
         open_ = prev
-        bars.append({
-            "t": f"{d.isoformat()}T05:00:00Z", "o": round(open_, 2),
-            "h": round(max(open_, close) + 1.2, 2), "l": round(min(open_, close) - 1.2, 2),
-            "c": round(close, 2), "v": 5_000_000 + i,
-        })
+        bars.append(
+            {
+                "t": f"{d.isoformat()}T05:00:00Z",
+                "o": round(open_, 2),
+                "h": round(max(open_, close) + 1.2, 2),
+                "l": round(min(open_, close) - 1.2, 2),
+                "c": round(close, 2),
+                "v": 5_000_000 + i,
+            }
+        )
         prev = close
         d += timedelta(days=1)
     return {"symbol": "X", "bars": bars}
 
 
 def _mock_fmp_fundamentals() -> None:
-    respx.get(FMP_RATIOS).mock(return_value=httpx.Response(
-        200, json=[{"grossProfitMargin": 0.44, "debtEquityRatio": 1.1,
-                    "priceEarningsRatio": 28.0, "eps": 6.0}]))
-    respx.get(FMP_METRICS).mock(return_value=httpx.Response(
-        200, json=[{"eps": 6.0, "forwardPE": 24.0}]))
-    respx.get(FMP_GROWTH).mock(return_value=httpx.Response(
-        200, json=[{"growthRevenue": 0.12, "growthEPS": 0.18}]))
-    respx.get(FMP_EARNINGS).mock(return_value=httpx.Response(
-        200, json=[{"date": "2099-01-15"}]))
+    respx.get(FMP_RATIOS).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "grossProfitMargin": 0.44,
+                    "debtEquityRatio": 1.1,
+                    "priceEarningsRatio": 28.0,
+                    "eps": 6.0,
+                }
+            ],
+        )
+    )
+    respx.get(FMP_METRICS).mock(
+        return_value=httpx.Response(200, json=[{"eps": 6.0, "forwardPE": 24.0}])
+    )
+    respx.get(FMP_GROWTH).mock(
+        return_value=httpx.Response(200, json=[{"growthRevenue": 0.12, "growthEPS": 0.18}])
+    )
+    respx.get(FMP_EARNINGS).mock(return_value=httpx.Response(200, json=[{"date": "2099-01-15"}]))
+    respx.get(FMP_NEWS).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "title": "Company beats estimates and raises guidance",
+                    "publishedDate": "2026-09-18T12:00:00Z",
+                    "url": "https://example.test/news/1",
+                }
+            ],
+        )
+    )
 
 
 @pytest_asyncio.fixture
@@ -102,8 +138,9 @@ async def session_factory():
 def build_service(session_factory, monitor: SourceHealthMonitor):
     router = SourceRouter(
         fmp=FMPClient(api_key="K", max_retries=1, health_recorder=monitor),
-        alpaca=AlpacaClient(api_key_id="I", api_secret_key="S", max_retries=1,
-                            health_recorder=monitor),
+        alpaca=AlpacaClient(
+            api_key_id="I", api_secret_key="S", max_retries=1, health_recorder=monitor
+        ),
     )
     ingestion = IngestionService(router, min_history_bars=250)
     return BotService(Pipeline(ingestion, session_factory), session_factory)
@@ -157,19 +194,19 @@ async def test_full_chain_and_reproducibility(session_factory):
 # --------------------------------------------------------------------------- #
 @respx.mock
 async def test_primary_source_failover_to_reserve(session_factory):
-    respx.get(FMP_HIST).mock(return_value=httpx.Response(503))          # FMP цены — down
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(503))  # FMP цены — down
     respx.get(ALPACA_BARS).mock(return_value=httpx.Response(200, json=_alpaca_bars()))
-    _mock_fmp_fundamentals()                                            # fundamentals из FMP ok
+    _mock_fmp_fundamentals()  # fundamentals из FMP ok
     monitor = SourceHealthMonitor()
     service = build_service(session_factory, monitor)
 
     text, sid = await service.analyze("AAPL")
 
-    assert sid is not None                       # расчёт получился через резерв
+    assert sid is not None  # расчёт получился через резерв
     assert "Final Score" in text
     async with session_factory() as s:
         signal = (await list_signals(s, "AAPL"))[0]
-    assert signal.price is not None              # цены получены (из резерва)
+    assert signal.price is not None  # цены получены (из резерва)
     # FMP помечен как сбойный, Alpaca (резерв) отработал успешно
     assert monitor.snapshot()["fmp"]["status"] == "error"
     assert monitor.snapshot()["alpaca"]["status"] == "ok"

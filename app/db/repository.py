@@ -4,11 +4,14 @@ signals — append-only: каждый расчёт создаёт новую с�
 raw_input_snapshot, что позволяет восстановить цепочку от входных данных до
 Final Score (принцип воспроизводимости, ТЗ 7, 13).
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -27,6 +30,7 @@ from app.risk.risk_filter import RiskAssessment
 from app.scoring import (
     FinalScore,
     ScoringConfig,
+    active_formula_version,
     compute_factor_scores,
     compute_final_score,
     load_scoring_config,
@@ -50,6 +54,9 @@ async def save_signal(
     price: float | None = None,
     ai_explanation: dict | None = None,
     news_sentiment: float | None = None,
+    catalyst_context: dict | None = None,
+    formula_snapshot: dict | None = None,
+    source_context: dict | None = None,
     timestamp: datetime | None = None,
 ) -> Signal:
     """Сохраняет один сигнал (append-only) с полным снимком входных данных."""
@@ -57,6 +64,14 @@ async def save_signal(
         "features": features.model_dump(mode="json"),
         "fundamentals": fundamentals.model_dump(mode="json"),
         "news_sentiment": news_sentiment,
+        "catalysts": catalyst_context or {},
+        "sources": source_context or {},
+        "calculation": {
+            "weights_used": final.weights_used,
+            "formula_version": final.formula_version,
+            "final_rule": final.rule,
+            "formula_config": formula_snapshot or active_formula_version().snapshot(),
+        },
     }
     signal = Signal(
         ticker=features.ticker,
@@ -76,9 +91,7 @@ async def save_signal(
     return signal
 
 
-async def list_signals(
-    session: AsyncSession, ticker: str, *, limit: int = 10
-) -> list[Signal]:
+async def list_signals(session: AsyncSession, ticker: str, *, limit: int = 10) -> list[Signal]:
     """Последние сигналы по тикеру (для /history и сверки), новые сверху."""
     stmt = (
         select(Signal)
@@ -92,25 +105,31 @@ async def list_signals(
 
 
 async def get_signal(session: AsyncSession, signal_id: int) -> Signal | None:
-    stmt = (
-        select(Signal)
-        .where(Signal.id == signal_id)
-        .options(selectinload(Signal.factor_scores))
-    )
+    stmt = select(Signal).where(Signal.id == signal_id).options(selectinload(Signal.factor_scores))
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 
-def recompute_from_snapshot(
-    signal: Signal, config: ScoringConfig | None = None
-) -> FinalScore:
+def recompute_from_snapshot(signal: Signal, config: ScoringConfig | None = None) -> FinalScore:
     """Восстанавливает Final Score из raw_input_snapshot записи истории.
 
     Даёт воспроизводимость: пересчёт по сохранённым входным данным и той же
     версии формул должен дать идентичный final_score (ТЗ 7).
     """
-    cfg = config or load_scoring_config()
     snap = signal.raw_input_snapshot
+    stored_formula = (snap.get("calculation") or {}).get("formula_config")
+    if config is not None:
+        cfg = config
+    elif stored_formula:
+        cfg = ScoringConfig.model_validate(
+            {
+                "version": stored_formula["version"],
+                "final_score_weights": stored_formula["final_score_weights"],
+                "factor_scores": stored_formula["factor_params"],
+            }
+        )
+    else:
+        cfg = load_scoring_config()
     features = FeatureSet.model_validate(snap["features"])
     fundamentals = Fundamentals.model_validate(snap["fundamentals"])
     factor_scores = compute_factor_scores(
@@ -132,9 +151,15 @@ async def upsert_price_history(session: AsyncSession, history: PriceHistory) -> 
         if row is None:
             session.add(
                 PriceHistoryRow(
-                    ticker=bar.ticker, date=bar.date, open=bar.open, high=bar.high,
-                    low=bar.low, close=bar.close, volume=bar.volume,
-                    source=bar.source, fetched_at=bar.fetched_at,
+                    ticker=bar.ticker,
+                    date=bar.date,
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    volume=bar.volume,
+                    source=bar.source,
+                    fetched_at=bar.fetched_at,
                 )
             )
         else:
@@ -145,23 +170,37 @@ async def upsert_price_history(session: AsyncSession, history: PriceHistory) -> 
     return len(history.bars)
 
 
-async def upsert_active_formula_version(
-    session: AsyncSession, version: FormulaVersion
-) -> None:
+async def upsert_active_formula_version(session: AsyncSession, version: FormulaVersion) -> None:
     """Делает версию активной (ровно одна is_active), сохраняя веса/пороги."""
     await session.execute(update(FormulaVersionRow).values(is_active=False))
-    existing = await session.get(FormulaVersionRow, version.version)
-    if existing is None:
-        session.add(
-            FormulaVersionRow(
-                version=version.version,
-                weights=version.final_score_weights,
-                thresholds=version.factor_params,
-                is_active=True,
-            )
+    values = {
+        "version": version.version,
+        "weights": version.final_score_weights,
+        "thresholds": version.factor_params,
+        "is_active": True,
+    }
+    dialect = session.bind.dialect.name
+    if dialect == "postgresql":
+        stmt = postgresql_insert(FormulaVersionRow).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[FormulaVersionRow.version],
+            set_={
+                "weights": stmt.excluded.weights,
+                "thresholds": stmt.excluded.thresholds,
+                "is_active": True,
+            },
+        )
+    elif dialect == "sqlite":
+        stmt = sqlite_insert(FormulaVersionRow).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[FormulaVersionRow.version],
+            set_={
+                "weights": stmt.excluded.weights,
+                "thresholds": stmt.excluded.thresholds,
+                "is_active": True,
+            },
         )
     else:
-        existing.weights = version.final_score_weights
-        existing.thresholds = version.factor_params
-        existing.is_active = True
+        stmt = insert(FormulaVersionRow).values(**values)
+    await session.execute(stmt)
     await session.commit()

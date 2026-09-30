@@ -3,6 +3,7 @@
 Бот работает через long polling — не требует публичного HTTPS-домена на MVP.
 Запускается отдельным процессом параллельно служебному FastAPI (/health).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +18,7 @@ from app.bot.service import BotService
 from app.config import get_settings
 from app.db.session import create_engine, create_session_factory
 from app.ingestion import IngestionService, build_source_router
-from app.monitoring import get_monitor
+from app.monitoring import SourceHealthMonitor
 from app.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,9 @@ async def run() -> None:
 
     engine = create_engine()
     session_factory = create_session_factory(engine)
-    source_router = build_source_router(settings, health_recorder=get_monitor())
+    source_router = build_source_router(
+        settings, health_recorder=SourceHealthMonitor(session_factory)
+    )
     ingestion = IngestionService(source_router)
     pipeline = Pipeline(ingestion, session_factory)
     service = BotService(pipeline, session_factory)
