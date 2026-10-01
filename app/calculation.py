@@ -10,9 +10,15 @@ Score → Risk Filter (ТЗ разделы 2, 7–9).
 и бенчмарка, fundamentals, дата отчётности, новости, SEC filings, доступность
 источников, причины неполноты данных, текущая котировка, профиль и дата расчёта.
 
-Неполнота входных данных (``data_issues``: короткая история, нет fundamentals,
-недоступны SEC/новости/дата отчётности) всегда превращается в флаг missing_data
-с перечнем причин — расчёт не выдаётся за полный.
+Полнота входных данных (версия формул v1.2+, ``assess_data_quality``) делится на
+два уровня (ТЗ раздел 8: «при отсутствии критичных данных система снижает
+confidence либо не формирует сигнал»):
+
+- критично (``insufficient``) — Final Score не выдаётся;
+- некритично (``reduced``) — Final Score выдаётся с пониженной достоверностью.
+
+В обоих случаях причины попадают во флаг missing_data. Пороги — в разделе
+``data_quality`` config/thresholds.yaml.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.features.catalysts import CatalystAnalysis, analyze_catalysts
 from app.features.indicators import FeatureSet, compute_features
-from app.ingestion.normalization import PriceBar, PriceHistory
+from app.ingestion.normalization import KEY_FUNDAMENTAL_FIELDS, PriceBar, PriceHistory
 from app.ingestion.schemas import CompanyProfile, Filing, Fundamentals, NewsItem, Quote
 from app.risk import RiskAssessment, compute_risk
 from app.scoring import (
@@ -33,8 +39,28 @@ from app.scoring import (
     compute_factor_scores,
     compute_final_score,
 )
+from app.scoring.thresholds import DataQualityConfig
 
 BAR_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
+
+
+CONFIDENCE_HIGH = "high"
+CONFIDENCE_REDUCED = "reduced"
+CONFIDENCE_INSUFFICIENT = "insufficient"
+
+
+class DataQuality(BaseModel):
+    """Оценка полноты данных расчёта: достоверность и причины по уровням."""
+
+    model_config = ConfigDict(frozen=True)
+
+    confidence: str  # high | reduced | insufficient
+    critical: list[str] = []
+    reduced: list[str] = []
+
+    @property
+    def reasons(self) -> list[str]:
+        return [*self.critical, *self.reduced]
 
 
 class CalculationResult(BaseModel):
@@ -45,6 +71,84 @@ class CalculationResult(BaseModel):
     factor_scores: FactorScores
     final: FinalScore
     risk: RiskAssessment
+    # None — версии формул до v1.2
+    data_quality: DataQuality | None = None
+
+
+def _detail(data_issues: list[str] | None, prefix: str, default: str) -> str:
+    """Причина из ingestion (с источником и классом ошибки), если она есть."""
+    for issue in data_issues or []:
+        if issue.startswith(prefix):
+            return issue
+    return default
+
+
+def assess_data_quality(
+    *,
+    cfg: DataQualityConfig,
+    price_history: PriceHistory,
+    benchmark: PriceHistory | None,
+    fundamentals: Fundamentals,
+    features: FeatureSet,
+    factor_scores: dict[str, int | None],
+    earnings_available: bool,
+    news_available: bool,
+    filings_available: bool,
+    data_issues: list[str] | None = None,
+) -> DataQuality:
+    critical: list[str] = []
+    reduced: list[str] = []
+
+    bars = len(price_history.bars)
+    if bars < cfg.min_history_bars_critical:
+        critical.append(
+            f"история цен {bars} < {cfg.min_history_bars_critical} баров — EMA200 не рассчитать"
+        )
+    elif bars < cfg.min_history_bars_full:
+        reduced.append(f"история цен {bars} < {cfg.min_history_bars_full} баров")
+
+    if benchmark is None or not benchmark.bars:
+        critical.append(
+            _detail(data_issues, "бенчмарк", "бенчмарк SPY недоступен")
+            + " — Relative Strength не рассчитать"
+        )
+
+    missing_metrics = list(features.missing)
+    if features.avg_volume_20d is None and "avg_volume_20d" not in missing_metrics:
+        missing_metrics.append("avg_volume_20d")
+    if missing_metrics and bars >= cfg.min_history_bars_critical:
+        critical.append("нет ключевых метрик: " + ", ".join(missing_metrics))
+
+    missing_fund = [f for f in KEY_FUNDAMENTAL_FIELDS if getattr(fundamentals, f) is None]
+    if len(missing_fund) >= cfg.fundamentals_missing_critical:
+        critical.append(
+            f"нет {len(missing_fund)} из {len(KEY_FUNDAMENTAL_FIELDS)} ключевых "
+            "fundamentals: " + ", ".join(missing_fund)
+        )
+    elif missing_fund:
+        reduced.append("нет fundamentals: " + ", ".join(missing_fund))
+
+    if not news_available and not filings_available:
+        critical.append("недоступны и новости, и SEC EDGAR — Catalysts не рассчитать")
+    elif not news_available:
+        reduced.append(_detail(data_issues, "новости", "новости недоступны"))
+    elif not filings_available:
+        reduced.append(_detail(data_issues, "SEC EDGAR", "SEC EDGAR недоступен"))
+
+    if not earnings_available:
+        reduced.append("дата отчётности неизвестна — риск близкой отчётности не проверен")
+
+    for name, value in factor_scores.items():
+        if value is None:
+            critical.append(f"фактор {name} не рассчитан")
+
+    if critical:
+        confidence = CONFIDENCE_INSUFFICIENT
+    elif reduced:
+        confidence = CONFIDENCE_REDUCED
+    else:
+        confidence = CONFIDENCE_HIGH
+    return DataQuality(confidence=confidence, critical=critical, reduced=reduced)
 
 
 def calculate(
@@ -73,6 +177,45 @@ def calculate(
     )
     factor_scores = compute_factor_scores(features, fundamentals, config, catalysts=catalysts)
     final = compute_final_score(factor_scores, config)
+
+    if config.data_quality is not None:
+        quality = assess_data_quality(
+            cfg=config.data_quality,
+            price_history=price_history,
+            benchmark=benchmark,
+            fundamentals=fundamentals,
+            features=features,
+            factor_scores=final.factor_scores,
+            earnings_available=earnings_available,
+            news_available=news_available,
+            filings_available=filings_available,
+            data_issues=data_issues,
+        )
+        if quality.critical and final.final_score is not None:
+            final = final.model_copy(
+                update={
+                    "final_score": None,
+                    "is_incomplete": True,
+                    "rule": final.rule + "; Final Score не выдан: критичная неполнота данных",
+                }
+            )
+        risk = compute_risk(
+            features,
+            next_earnings_date=next_earnings_date,
+            news_sentiment=catalysts.sentiment,
+            missing_reasons=quality.reasons,
+            today=calc_date,
+        )
+        return CalculationResult(
+            features=features,
+            catalysts=catalysts,
+            factor_scores=factor_scores,
+            final=final,
+            risk=risk,
+            data_quality=quality,
+        )
+
+    # Версии формул до v1.2: неполнота только помечается флагом.
     missing = [
         f"фактор {name} не рассчитан"
         for name, value in final.factor_scores.items()

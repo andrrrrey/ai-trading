@@ -40,6 +40,7 @@ app/
 config/thresholds.yaml # веса Score, пороги Risk/Rule Engine (v1)
 scripts/               # smoke, replay, backup/restore, сборка артефактов приёмки
 tests/                 # pytest
+docs/APPROVAL_STAGE1_DECISIONS.md  # протокол согласования правил v1.2 с Заказчиком
 docs/FORMULAS_AND_API.md       # формулы, источники, ошибки, /health, бот
 docs/OPERATIONS.md             # развёртывание, healthcheck, логи, backup/restore
 docs/THIRD_PARTY_LICENSES.md   # сторонние компоненты и лицензии

@@ -80,7 +80,8 @@ def test_8k_items_give_deterministic_sign():
     neutral = analyze_catalysts([], [filing("8-K", CALC, "2.02,9.01")], calc_date=CALC)
     late = analyze_catalysts([], [filing("NT 10-Q", CALC)], calc_date=CALC)
 
-    assert pos.sec_event_score == 1.0 and pos.signal == 1.0
+    # асимметрия: позитивный пункт +0.5, негативный −1
+    assert pos.sec_event_score == 0.5 and pos.signal == 0.5
     assert neg.sec_event_score == -1.0 and neg.signal == -1.0
     assert neutral.sec_event_score is None and neutral.signal == 0.0
     assert late.sec_event_score == -1.0
@@ -94,7 +95,7 @@ def test_recency_weight_and_lookback():
     result = analyze_catalysts([], [fresh_neg, old_pos, expired], calc_date=CALC)
 
     assert result.sec_event_count == 2
-    assert result.sec_event_score == pytest.approx((-1.0 * 1.0 + 1.0 * 0.5) / 1.5)
+    assert result.sec_event_score == pytest.approx((-1.0 * 1.0 + 0.5 * 0.5) / 1.5)
 
 
 def test_sec_has_priority_over_news():

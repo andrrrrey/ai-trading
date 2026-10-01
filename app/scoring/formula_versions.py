@@ -21,15 +21,19 @@ class FormulaVersion(BaseModel):
     version: str
     final_score_weights: dict[str, float]
     factor_params: dict
+    data_quality: dict | None = None
     is_active: bool = True
 
     def snapshot(self) -> dict:
         """Полный снимок для сохранения в jsonb (formula_versions / signals)."""
-        return {
+        snapshot = {
             "version": self.version,
             "final_score_weights": self.final_score_weights,
             "factor_params": self.factor_params,
         }
+        if self.data_quality is not None:
+            snapshot["data_quality"] = self.data_quality
+        return snapshot
 
 
 def active_formula_version(config: ScoringConfig | None = None) -> FormulaVersion:
@@ -39,5 +43,6 @@ def active_formula_version(config: ScoringConfig | None = None) -> FormulaVersio
         version=cfg.version,
         final_score_weights=cfg.final_score_weights.as_dict(),
         factor_params=cfg.factor_scores.model_dump(),
+        data_quality=cfg.data_quality.model_dump() if cfg.data_quality else None,
         is_active=True,
     )

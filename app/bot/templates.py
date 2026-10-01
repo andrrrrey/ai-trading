@@ -140,19 +140,46 @@ def _profile_line(signal: Signal) -> str | None:
     return f"🏢 {_e(text)}" if text else None
 
 
-def _is_incomplete(signal: Signal) -> bool:
+_CONFIDENCE_TITLES = {
+    "high": "высокая",
+    "reduced": "пониженная",
+    "insufficient": "недостаточно данных",
+}
+
+
+def _data_quality(signal: Signal) -> dict | None:
+    return (signal.raw_input_snapshot or {}).get("data_quality")
+
+
+def _confidence(signal: Signal) -> str:
+    """high | reduced | insufficient; для записей до v1.2 — по флагу missing_data."""
+    quality = _data_quality(signal)
+    if quality:
+        return quality["confidence"]
+    if signal.final_score is None:
+        return "insufficient"
     flags = signal.risk_flags or []
-    return signal.final_score is None or any(f["flag"] == "missing_data" for f in flags)
+    return "reduced" if any(f["flag"] == "missing_data" for f in flags) else "high"
+
+
+def _score_text(signal: Signal) -> str:
+    confidence = _confidence(signal)
+    if signal.final_score is None:
+        return "не рассчитан (недостаточно данных)"
+    title = _CONFIDENCE_TITLES[confidence]
+    return f"{signal.final_score}/100 · достоверность: {title}"
 
 
 def render_main(signal: Signal) -> str:
     flags = signal.risk_flags or []
+    confidence = _confidence(signal)
     if signal.final_score is None:
-        score = "<b>не рассчитан</b> (неполные данные)"
-    elif _is_incomplete(signal):
-        score = f"<b>{signal.final_score}/100</b> (предварительный: неполные данные)"
+        score = "<b>не рассчитан</b> — недостаточно данных"
     else:
-        score = f"<b>{signal.final_score}/100</b>"
+        score = (
+            f"<b>{signal.final_score}/100</b> · достоверность: "
+            f"{_CONFIDENCE_TITLES[confidence]}"
+        )
     timestamp = signal.timestamp.strftime("%Y-%m-%d %H:%M UTC")
     lines = [f"📊 <b>{_e(signal.ticker)}</b> — Final Score: {score}"]
     profile_line = _profile_line(signal)
@@ -171,8 +198,15 @@ def render_main(signal: Signal) -> str:
         )
     else:
         lines.append("✅ Risk: без флагов")
-    if _is_incomplete(signal):
-        lines.append("❗ Расчёт неполный: часть данных недоступна (см. кнопку «Risk»).")
+    quality = _data_quality(signal) or {}
+    if signal.final_score is None:
+        lines.append("❗ Final Score не выдан. Критичные причины:")
+        for reason in quality.get("critical") or ["часть данных недоступна (кнопка «Risk»)"]:
+            lines.append(f"  • {_e(reason)}")
+    elif confidence == "reduced":
+        lines.append("❗ Достоверность пониженная, причины:")
+        for reason in quality.get("reduced") or ["часть данных недоступна (кнопка «Risk»)"]:
+            lines.append(f"  • {_e(reason)}")
     for warning in _raw_inputs(signal).get("warnings") or []:
         lines.append(f"ℹ️ {_e(warning)}")
     lines += ["", DISCLAIMER]
@@ -271,7 +305,10 @@ def render_metrics(signal: Signal) -> str:
 
 def render_risk(signal: Signal) -> str:
     flags = signal.risk_flags or []
-    lines = [f"🛡 <b>{_e(signal.ticker)}</b> — Risk Filter:"]
+    lines = [
+        f"🛡 <b>{_e(signal.ticker)}</b> — Risk Filter",
+        f"Достоверность расчёта: {_CONFIDENCE_TITLES[_confidence(signal)]}",
+    ]
     if not flags:
         lines.append("✅ Активных флагов риска нет.")
     else:
@@ -290,7 +327,7 @@ def render_history(ticker: str, signals: Iterable[Signal]) -> str:
     for s in signals:
         when = s.timestamp.strftime("%Y-%m-%d %H:%M")
         price = f"${s.price:.2f}" if s.price is not None else "н/д"
-        score = f"{s.final_score}/100" if s.final_score is not None else "неполный расчёт"
+        score = _score_text(s)
         # Торговый статус формирует Rule Engine (Этап 2); до него в истории
         # показываются только Score и риск, без BUY/WATCH/SELL.
         lines.append(f"• {when} UTC | {price} | Score {score} | {_risk_summary(s)}")

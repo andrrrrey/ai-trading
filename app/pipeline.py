@@ -146,6 +146,9 @@ class Pipeline:
                 formula_snapshot=active_formula_version(self._config).snapshot(),
                 source_context=source_context,
                 raw_inputs=raw_inputs,
+                data_quality=(
+                    result.data_quality.model_dump() if result.data_quality else None
+                ),
             )
             logger.info(
                 "signal saved id=%s ticker=%s final=%s mode=%s",

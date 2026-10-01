@@ -395,23 +395,81 @@ async def test_replay_from_stored_raw_inputs(session_factory):
 
 
 # --------------------------------------------------------------------------- #
-# Недостаточная история (249 < 250 баров) → missing_data и «предварительный»
+# Полнота данных, два уровня (v1.2)
 # --------------------------------------------------------------------------- #
-@respx.mock
-async def test_short_history_is_marked_incomplete(session_factory):
-    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist(249)))
+async def _analyze(session_factory, bars: int = 260) -> tuple[str, Signal]:
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist(bars)))
     _mock_fmp_fundamentals()
     service = build_service(session_factory, SourceHealthMonitor())
-
-    text, sid = await service.analyze("AAPL")
-
+    text, _ = await service.analyze("AAPL")
     async with session_factory() as s:
-        signal = (await list_signals(s, "AAPL"))[0]
+        return text, (await list_signals(s, "AAPL"))[0]
+
+
+@respx.mock
+async def test_full_data_has_high_confidence(session_factory):
+    text, signal = await _analyze(session_factory)
+    assert signal.raw_input_snapshot["data_quality"]["confidence"] == "high"
+    assert "достоверность: высокая" in text
+
+
+@respx.mock
+async def test_short_history_reduces_confidence(session_factory):
+    # 249 баров: все метрики, включая EMA200, считаются → Score выдаётся
+    text, signal = await _analyze(session_factory, bars=249)
+
+    quality = signal.raw_input_snapshot["data_quality"]
+    assert quality["confidence"] == "reduced"
+    assert signal.final_score is not None
     flags = {f["flag"]: f["reason"] for f in signal.risk_flags}
-    assert "missing_data" in flags
     assert "249 < 250" in flags["missing_data"]
-    assert "предварительный" in text and "неполный" in text
+    assert "достоверность: пониженная" in text and "249 &lt; 250" in text
     assert replay_signal(signal).risk.flag_names() == [f["flag"] for f in signal.risk_flags]
+
+
+@respx.mock
+async def test_very_short_history_blocks_final_score(session_factory):
+    # < 200 баров: EMA200 не рассчитать → Final Score не выдаётся, факторы сохранены
+    text, signal = await _analyze(session_factory, bars=150)
+
+    assert signal.final_score is None
+    assert signal.factor_scores.momentum is not None
+    quality = signal.raw_input_snapshot["data_quality"]
+    assert quality["confidence"] == "insufficient"
+    assert any("150 < 200" in reason for reason in quality["critical"])
+    assert "не рассчитан" in text and "150 &lt; 200" in text
+    assert "Score не рассчитан" in await build_service(
+        session_factory, SourceHealthMonitor()
+    ).history("AAPL")
+    replay = replay_signal(signal)
+    assert replay.final.final_score is None
+    assert replay.data_quality.confidence == "insufficient"
+
+
+@respx.mock
+async def test_missing_fundamentals_levels(session_factory):
+    # нет gross margin и D/E (2 из 6) — фактор Fundamentals считается по EPS
+    # → пониженная достоверность
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(FMP_RATIOS).mock(
+        return_value=httpx.Response(200, json=[{"priceEarningsRatio": 28.0, "eps": 6.0}])
+    )
+    service = build_service(session_factory, SourceHealthMonitor())
+    await service.analyze("AAPL")
+    async with session_factory() as s:
+        two_missing = (await list_signals(s, "AAPL"))[0]
+    assert two_missing.raw_input_snapshot["data_quality"]["confidence"] == "reduced"
+    assert two_missing.final_score is not None
+
+    # + нет роста выручки (3 из 6) → Final Score не выдаётся
+    respx.get(FMP_GROWTH).mock(return_value=httpx.Response(200, json=[{"growthEPS": 0.18}]))
+    await service.analyze("AAPL")
+    async with session_factory() as s:
+        three_missing = (await list_signals(s, "AAPL"))[0]
+    quality = three_missing.raw_input_snapshot["data_quality"]
+    assert quality["confidence"] == "insufficient"
+    assert three_missing.final_score is None
 
 
 # --------------------------------------------------------------------------- #
@@ -454,7 +512,10 @@ async def test_sec_unavailable_is_flagged(session_factory):
     flags = {f["flag"]: f["reason"] for f in signal.risk_flags}
     assert "SEC EDGAR недоступен (sec_edgar: timeout)" in flags["missing_data"]
     assert signal.raw_input_snapshot["catalysts"]["filings_available"] is False
-    assert "неполный" in text
+    # SEC недоступен, новости есть → Score выдаётся с пониженной достоверностью
+    assert signal.final_score is not None
+    assert signal.raw_input_snapshot["data_quality"]["confidence"] == "reduced"
+    assert "достоверность: пониженная" in text
 
 
 # --------------------------------------------------------------------------- #

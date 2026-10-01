@@ -1,12 +1,14 @@
 """Детерминированная оценка катализаторов: новости + события SEC (фактор Catalysts).
 
-Этап 1 не использует LLM для числовых расчётов. Правило v1.1:
+Этап 1 не использует LLM для числовых расчётов. Правило v1.2 (базовое правило
+Этапа 1; новостная часть заменяется полноценной оценкой новостей на Этапе 2):
 
 1. Новости: каждый уникальный заголовок получает словарную оценку -1/0/+1;
    ``news_sentiment`` — среднее.
 2. SEC (официальный источник, приоритетнее СМИ):
-   - 8-K оценивается по пунктам события (positive/negative_8k_items в конфиге),
-     уведомления о просрочке отчётности (NT 10-K / NT 10-Q) — всегда −1;
+   - 8-K оценивается по пунктам события: негативные пункты −1, позитивные +0.5
+     (они неоднозначны — асимметрия), остальные 0; уведомления о просрочке
+     отчётности (NT 10-K / NT 10-Q) — −1;
    - учитываются только события не старше ``sec_event_lookback_days``; вес
      события ``w = 1 − возраст/окно`` (свежее событие весит больше);
    - ``sec_event_score = Σ знак·w / Σ w`` по событиям с ненулевым знаком;
@@ -134,16 +136,16 @@ def _headline_score(title: str) -> float:
 
 
 def filing_event_sign(filing: Filing, cfg: CatalystsConfig) -> float:
-    """Знак события SEC: +1 / −1 / 0 по форме и пунктам 8-K."""
+    """Оценка события SEC по форме и пунктам 8-K (позитив +0.5, негатив −1, иначе 0)."""
     if filing.form in cfg.negative_forms:
-        return -1.0
+        return cfg.negative_8k_score
     if filing.form != "8-K":
         return 0.0
     items = {item.strip() for item in (filing.items or "").split(",") if item.strip()}
     if items & set(cfg.negative_8k_items):
-        return -1.0
+        return cfg.negative_8k_score
     if items & set(cfg.positive_8k_items):
-        return 1.0
+        return cfg.positive_8k_score
     return 0.0
 
 

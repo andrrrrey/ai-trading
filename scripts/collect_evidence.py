@@ -57,10 +57,13 @@ STAGES: dict[str, dict] = {
             "tests/test_normalization.py",
             "tests/test_base_client.py",
             "tests/test_ingestion_service.py",
+            "tests/test_data_quality.py",
         ],
         "checks": [
             "1–3: нормализация OHLCV (NY-дата, USD), валидация, дедупликация",
-            "2, 8: пропуски остаются null, неполнота → data_issues → флаг missing_data",
+            "2, 8: пропуски остаются null; полнота оценивается по двум уровням "
+            "(test_data_quality.py): критично — Score не выдаётся, некритично — "
+            "достоверность пониженная; причины — во флаге missing_data",
             "4–6: некорректный ответ, timeout, rate limit — классы ошибок и сообщения",
             "7: недоступность источника → резерв или честное сообщение",
         ],
@@ -120,7 +123,8 @@ STAGES: dict[str, dict] = {
         "checks": [
             "1–5: high_volatility, event_risk, gap_risk, liquidity_risk, overextension",
             "6: missing_data — короткая история, нет fundamentals/earnings, SEC или новости "
-            "недоступны; Score помечается «предварительный»",
+            "недоступны; два уровня: критично — Score не выдаётся, некритично — "
+            "«достоверность: пониженная»",
             "7–8: причина и значение каждого флага сохраняются в signals.risk_flags",
             "9: потолок статуса (allowed_max_status) сохраняется для Rule Engine Этапа 2",
         ],

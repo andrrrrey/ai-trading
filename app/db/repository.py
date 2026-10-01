@@ -61,6 +61,7 @@ async def save_signal(
     formula_snapshot: dict | None = None,
     source_context: dict | None = None,
     raw_inputs: dict | None = None,
+    data_quality: dict | None = None,
     timestamp: datetime | None = None,
 ) -> Signal:
     """Сохраняет один сигнал (append-only) с полным снимком входных данных."""
@@ -79,6 +80,8 @@ async def save_signal(
         # Исходные данные расчёта (OHLCV тикера и SPY, fundamentals, earnings,
         # новости, filings, дата расчёта) — для воспроизведения всей цепочки.
         "raw_inputs": raw_inputs,
+        # Достоверность (high / reduced / insufficient) и причины по уровням.
+        "data_quality": data_quality,
     }
     signal = Signal(
         ticker=features.ticker,
@@ -129,6 +132,8 @@ def stored_scoring_config(signal: Signal) -> ScoringConfig:
             "version": stored_formula["version"],
             "final_score_weights": stored_formula["final_score_weights"],
             "factor_scores": stored_formula["factor_params"],
+            # версии до v1.2 не знали уровней неполноты — повтор без них
+            "data_quality": stored_formula.get("data_quality"),
         }
     )
 
@@ -212,7 +217,11 @@ async def upsert_active_formula_version(session: AsyncSession, version: FormulaV
     values = {
         "version": version.version,
         "weights": version.final_score_weights,
-        "thresholds": version.factor_params,
+        "thresholds": (
+            {**version.factor_params, "data_quality": version.data_quality}
+            if version.data_quality is not None
+            else version.factor_params
+        ),
         "is_active": True,
     }
     dialect = session.bind.dialect.name
