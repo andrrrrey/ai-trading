@@ -167,6 +167,7 @@ async def test_market_data_flags_incomplete_fundamentals():
         return_value=httpx.Response(200, json=[{"date": "2099-01-01"}])
     )
     respx.get(re.compile(r".*/stable/news/stock")).mock(return_value=httpx.Response(200, json=[]))
+    _mock_quote_profile()
 
     data = await service.get_market_data("AAPL")
 
@@ -216,9 +217,19 @@ async def test_market_data_marks_unavailable_earnings_without_crashing():
     )
     respx.get(re.compile(r".*/stable/earnings")).mock(return_value=httpx.Response(401))
     respx.get(re.compile(r".*/stable/news/stock")).mock(return_value=httpx.Response(200, json=[]))
+    _mock_quote_profile()
 
     data = await service.get_market_data("AAPL")
 
     assert data.earnings.next_earnings_date is None
     assert data.quality["earnings"].is_incomplete is True
     assert data.is_incomplete is True
+
+
+def _mock_quote_profile() -> None:
+    respx.get(re.compile(r".*/stable/quote")).mock(
+        return_value=httpx.Response(200, json=[{"price": 11.2, "timestamp": 1758139200}])
+    )
+    respx.get(re.compile(r".*/stable/profile")).mock(
+        return_value=httpx.Response(200, json=[{"companyName": "Apple Inc."}])
+    )

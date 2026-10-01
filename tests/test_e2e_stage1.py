@@ -29,6 +29,7 @@ from app.db.session import create_all
 from app.ingestion import IngestionService
 from app.ingestion.alpaca_client import AlpacaClient
 from app.ingestion.fmp_client import FMPClient
+from app.ingestion.sec_edgar_client import SECEdgarClient
 from app.ingestion.source_router import SourceRouter
 from app.monitoring.source_health import SourceHealthMonitor, latest_data_mode
 from app.pipeline import Pipeline
@@ -39,6 +40,10 @@ FMP_METRICS = re.compile(r".*/stable/key-metrics")
 FMP_GROWTH = re.compile(r".*/stable/income-statement-growth")
 FMP_EARNINGS = re.compile(r".*/stable/earnings")
 FMP_NEWS = re.compile(r".*/stable/news/stock")
+FMP_QUOTE = re.compile(r".*/stable/quote")
+SEC_TICKERS = re.compile(r".*sec\.gov/files/company_tickers\.json")
+SEC_SUBMISSIONS = re.compile(r".*/submissions/CIK\d+\.json")
+FMP_PROFILE = re.compile(r".*/stable/profile")
 ALPACA_BARS = re.compile(r".*/v2/stocks/.+/bars")
 
 
@@ -88,7 +93,48 @@ def _alpaca_bars(n: int = 260, base: float = 150.0) -> dict:
     return {"symbol": "X", "bars": bars}
 
 
+def _mock_sec(filings: list[tuple[str, str, str]] | None = None) -> None:
+    """SEC EDGAR: справочник CIK и submissions; filings = [(form, date, items)]."""
+    filings = filings or [("10-Q", "2026-08-01", "")]
+    respx.get(SEC_TICKERS).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "0": {"cik_str": 320193, "ticker": "AAPL"},
+                "1": {"cik_str": 999, "ticker": "SPY"},
+            },
+        )
+    )
+    respx.get(SEC_SUBMISSIONS).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "filings": {
+                    "recent": {
+                        "form": [f[0] for f in filings],
+                        "filingDate": [f[1] for f in filings],
+                        "accessionNumber": [f"acc-{i}" for i in range(len(filings))],
+                        "items": [f[2] for f in filings],
+                    }
+                }
+            },
+        )
+    )
+
+
 def _mock_fmp_fundamentals() -> None:
+    _mock_sec()
+    respx.get(FMP_QUOTE).mock(
+        return_value=httpx.Response(
+            200, json=[{"symbol": "AAPL", "price": 201.5, "timestamp": 1758139200}]
+        )
+    )
+    respx.get(FMP_PROFILE).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"companyName": "Apple Inc.", "exchange": "NASDAQ", "sector": "Technology"}],
+        )
+    )
     respx.get(FMP_RATIOS).mock(
         return_value=httpx.Response(
             200,
@@ -141,6 +187,9 @@ def build_service(session_factory, monitor: SourceHealthMonitor):
         alpaca=AlpacaClient(
             api_key_id="I", api_secret_key="S", max_retries=1, health_recorder=monitor
         ),
+        sec_edgar=SECEdgarClient(
+            user_agent="test test@example.com", max_retries=1, health_recorder=monitor
+        ),
     )
     ingestion = IngestionService(router, min_history_bars=250)
     return BotService(Pipeline(ingestion, session_factory), session_factory)
@@ -178,6 +227,14 @@ async def test_full_chain_and_reproducibility(session_factory):
 
     # значения в backend и в Telegram совпадают
     assert _score_from_text(text1) == signal.final_score
+    # полный набор данных: без флага missing_data и без пометки «неполный»
+    assert "missing_data" not in [f["flag"] for f in signal.risk_flags]
+    assert "неполн" not in text1
+    # текущая котировка и закрытие EOD показаны раздельно, профиль подключён
+    assert "Цена: $201.50 (котировка fmp" in text1
+    assert "Закрытие EOD" in text1
+    assert "Apple Inc." in text1
+    assert signal.price == 201.5
 
     # источник данных виден и это основной (FMP)
     assert signal.raw_input_snapshot["features"]["price"] is not None
@@ -334,3 +391,149 @@ async def test_replay_from_stored_raw_inputs(session_factory):
     }
     assert replay.features.model_dump(mode="json") == signal.raw_input_snapshot["features"]
     assert [f.model_dump() for f in replay.risk.active_flags] == signal.risk_flags
+
+
+
+# --------------------------------------------------------------------------- #
+# Полнота данных, два уровня (v1.2)
+# --------------------------------------------------------------------------- #
+async def _analyze(session_factory, bars: int = 260) -> tuple[str, Signal]:
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist(bars)))
+    _mock_fmp_fundamentals()
+    service = build_service(session_factory, SourceHealthMonitor())
+    text, _ = await service.analyze("AAPL")
+    async with session_factory() as s:
+        return text, (await list_signals(s, "AAPL"))[0]
+
+
+@respx.mock
+async def test_full_data_has_high_confidence(session_factory):
+    text, signal = await _analyze(session_factory)
+    assert signal.raw_input_snapshot["data_quality"]["confidence"] == "high"
+    assert "достоверность: высокая" in text
+
+
+@respx.mock
+async def test_short_history_reduces_confidence(session_factory):
+    # 249 баров: все метрики, включая EMA200, считаются → Score выдаётся
+    text, signal = await _analyze(session_factory, bars=249)
+
+    quality = signal.raw_input_snapshot["data_quality"]
+    assert quality["confidence"] == "reduced"
+    assert signal.final_score is not None
+    flags = {f["flag"]: f["reason"] for f in signal.risk_flags}
+    assert "249 < 250" in flags["missing_data"]
+    assert "достоверность: пониженная" in text and "249 &lt; 250" in text
+    assert replay_signal(signal).risk.flag_names() == [f["flag"] for f in signal.risk_flags]
+
+
+@respx.mock
+async def test_very_short_history_blocks_final_score(session_factory):
+    # < 200 баров: EMA200 не рассчитать → Final Score не выдаётся, факторы сохранены
+    text, signal = await _analyze(session_factory, bars=150)
+
+    assert signal.final_score is None
+    assert signal.factor_scores.momentum is not None
+    quality = signal.raw_input_snapshot["data_quality"]
+    assert quality["confidence"] == "insufficient"
+    assert any("150 < 200" in reason for reason in quality["critical"])
+    assert "не рассчитан" in text and "150 &lt; 200" in text
+    assert "Score не рассчитан" in await build_service(
+        session_factory, SourceHealthMonitor()
+    ).history("AAPL")
+    replay = replay_signal(signal)
+    assert replay.final.final_score is None
+    assert replay.data_quality.confidence == "insufficient"
+
+
+@respx.mock
+async def test_missing_fundamentals_levels(session_factory):
+    # нет gross margin и D/E (2 из 6) — фактор Fundamentals считается по EPS
+    # → пониженная достоверность
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(FMP_RATIOS).mock(
+        return_value=httpx.Response(200, json=[{"priceEarningsRatio": 28.0, "eps": 6.0}])
+    )
+    service = build_service(session_factory, SourceHealthMonitor())
+    await service.analyze("AAPL")
+    async with session_factory() as s:
+        two_missing = (await list_signals(s, "AAPL"))[0]
+    assert two_missing.raw_input_snapshot["data_quality"]["confidence"] == "reduced"
+    assert two_missing.final_score is not None
+
+    # + нет роста выручки (3 из 6) → Final Score не выдаётся
+    respx.get(FMP_GROWTH).mock(return_value=httpx.Response(200, json=[{"growthEPS": 0.18}]))
+    await service.analyze("AAPL")
+    async with session_factory() as s:
+        three_missing = (await list_signals(s, "AAPL"))[0]
+    quality = three_missing.raw_input_snapshot["data_quality"]
+    assert quality["confidence"] == "insufficient"
+    assert three_missing.final_score is None
+
+
+# --------------------------------------------------------------------------- #
+# SEC: событие 8-K влияет на Catalysts; сбой SEC не скрывается
+# --------------------------------------------------------------------------- #
+async def _score_with_filings(session_factory, filings) -> Signal:
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    _mock_sec(filings)
+    service = build_service(session_factory, SourceHealthMonitor())
+    _, sid = await service.analyze("AAPL")
+    async with session_factory() as s:
+        return (await list_signals(s, "AAPL"))[0]
+
+
+@respx.mock
+async def test_sec_negative_8k_lowers_catalysts(session_factory):
+    today = date.today().isoformat()
+    neutral = await _score_with_filings(session_factory, [("10-Q", today, "")])
+    negative = await _score_with_filings(session_factory, [("8-K", today, "4.02,9.01")])
+
+    assert negative.factor_scores.catalysts < neutral.factor_scores.catalysts
+    assert negative.final_score < neutral.final_score
+    ctx = negative.raw_input_snapshot["catalysts"]
+    assert ctx["sec_event_score"] == -1.0
+    assert ctx["evidence"][0]["kind"] == "sec_event"
+
+
+@respx.mock
+async def test_sec_unavailable_is_flagged(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(SEC_SUBMISSIONS).mock(side_effect=httpx.ReadTimeout("sec down"))
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    text, sid = await service.analyze("AAPL")
+
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    flags = {f["flag"]: f["reason"] for f in signal.risk_flags}
+    assert "SEC EDGAR недоступен (sec_edgar: timeout)" in flags["missing_data"]
+    assert signal.raw_input_snapshot["catalysts"]["filings_available"] is False
+    # SEC недоступен, новости есть → Score выдаётся с пониженной достоверностью
+    assert signal.final_score is not None
+    assert signal.raw_input_snapshot["data_quality"]["confidence"] == "reduced"
+    assert "достоверность: пониженная" in text
+
+
+# --------------------------------------------------------------------------- #
+# Telegram HTML: внешний текст экранируется
+# --------------------------------------------------------------------------- #
+@respx.mock
+async def test_external_text_is_html_escaped(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(FMP_NEWS).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"title": "AT&T <beats> estimates", "publishedDate": "2026-09-18T12:00:00Z"}],
+        )
+    )
+    service = build_service(session_factory, SourceHealthMonitor())
+    _, sid = await service.analyze("AAPL")
+
+    details = await service.section(sid, "details")
+    assert "AT&amp;T &lt;beats&gt; estimates" in details
+    assert "<beats>" not in details

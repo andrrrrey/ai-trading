@@ -24,11 +24,13 @@ from app.db.models import (
 from app.db.models import (
     PriceHistory as PriceHistoryRow,
 )
+from app.features.catalysts import CatalystAnalysis
 from app.features.indicators import FeatureSet
 from app.ingestion.normalization import PriceHistory
 from app.ingestion.schemas import Fundamentals
 from app.risk.risk_filter import RiskAssessment
 from app.scoring import (
+    FactorScores,
     FinalScore,
     ScoringConfig,
     active_formula_version,
@@ -59,6 +61,7 @@ async def save_signal(
     formula_snapshot: dict | None = None,
     source_context: dict | None = None,
     raw_inputs: dict | None = None,
+    data_quality: dict | None = None,
     timestamp: datetime | None = None,
 ) -> Signal:
     """Сохраняет один сигнал (append-only) с полным снимком входных данных."""
@@ -77,6 +80,8 @@ async def save_signal(
         # Исходные данные расчёта (OHLCV тикера и SPY, fundamentals, earnings,
         # новости, filings, дата расчёта) — для воспроизведения всей цепочки.
         "raw_inputs": raw_inputs,
+        # Достоверность (high / reduced / insufficient) и причины по уровням.
+        "data_quality": data_quality,
     }
     signal = Signal(
         ticker=features.ticker,
@@ -127,6 +132,8 @@ def stored_scoring_config(signal: Signal) -> ScoringConfig:
             "version": stored_formula["version"],
             "final_score_weights": stored_formula["final_score_weights"],
             "factor_scores": stored_formula["factor_params"],
+            # версии до v1.2 не знали уровней неполноты — повтор без них
+            "data_quality": stored_formula.get("data_quality"),
         }
     )
 
@@ -151,12 +158,25 @@ def recompute_from_snapshot(signal: Signal, config: ScoringConfig | None = None)
     """
     snap = signal.raw_input_snapshot
     cfg = config or stored_scoring_config(signal)
+    return compute_final_score(factor_scores_from_snapshot(snap, cfg), cfg)
+
+
+def factor_scores_from_snapshot(snap: dict, cfg: ScoringConfig) -> FactorScores:
+    """7 факторов по сохранённым метрикам, fundamentals и Catalyst-контексту."""
     features = FeatureSet.model_validate(snap["features"])
     fundamentals = Fundamentals.model_validate(snap["fundamentals"])
-    factor_scores = compute_factor_scores(
+    catalyst_context = snap.get("catalysts") or {}
+    if "signal" in catalyst_context:
+        return compute_factor_scores(
+            features,
+            fundamentals,
+            cfg,
+            catalysts=CatalystAnalysis.model_validate(catalyst_context),
+        )
+    # записи до версии v1.1: Catalysts считался только по тональности новостей
+    return compute_factor_scores(
         features, fundamentals, cfg, news_sentiment=snap.get("news_sentiment")
     )
-    return compute_final_score(factor_scores, cfg)
 
 
 async def upsert_price_history(session: AsyncSession, history: PriceHistory) -> int:
@@ -197,7 +217,11 @@ async def upsert_active_formula_version(session: AsyncSession, version: FormulaV
     values = {
         "version": version.version,
         "weights": version.final_score_weights,
-        "thresholds": version.factor_params,
+        "thresholds": (
+            {**version.factor_params, "data_quality": version.data_quality}
+            if version.data_quality is not None
+            else version.factor_params
+        ),
         "is_active": True,
     }
     dialect = session.bind.dialect.name

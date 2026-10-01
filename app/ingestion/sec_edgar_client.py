@@ -81,7 +81,9 @@ class SECEdgarClient(BaseSourceClient):
         return cik
 
     async def get_recent_filings(
-        self, ticker: str, forms: tuple[str, ...] = ("10-K", "10-Q", "8-K")
+        self,
+        ticker: str,
+        forms: tuple[str, ...] = ("10-K", "10-Q", "8-K", "NT 10-K", "NT 10-Q"),
     ) -> list[Filing]:
         """Последние филинги компании указанных форм."""
         cik = await self.get_cik(ticker)
@@ -90,6 +92,7 @@ class SECEdgarClient(BaseSourceClient):
         form_list = recent.get("form", []) or []
         dates = recent.get("filingDate", []) or []
         accessions = recent.get("accessionNumber", []) or []
+        items = recent.get("items", []) or []
         fetched = _now()
         result: list[Filing] = []
         for i, form in enumerate(form_list):
@@ -101,6 +104,7 @@ class SECEdgarClient(BaseSourceClient):
                     form=form,
                     filed_date=_to_date(dates[i]) if i < len(dates) else None,
                     accession_number=accessions[i] if i < len(accessions) else None,
+                    items=(items[i] or None) if i < len(items) else None,
                     source=self.source,
                     fetched_at=fetched,
                 )

@@ -1,27 +1,27 @@
-# Подэтап 1.1 — артефакт проверки DoD
+# Подэтап 1.1 — Источники данных
 
-Дата: 2026-09-18T16:43:12Z
+- Сформировано: 2026-10-01 05:38 UTC (`scripts/collect_evidence.py`)
+- Commit: `a339b9a` · версия формул: `v1.2`
+- Живые прогоны: нет — выполнить на сервере с --live
 
-## pytest (контрактные тесты клиентов и source_router)
+## Что подтверждает (пункты чек-листа)
+- 1–3: FMP (котировка, история, fundamentals, earnings, profile, новости), SEC EDGAR (10-K/10-Q/8-K/NT) — live smoke ниже
+- 4, 7: резерв Alpaca (цены, котировка) / Finnhub (новости); переключение при таймауте, сетевой и HTTP-ошибке — тесты source_router и e2e
+- 5–6: источник, режим (primary/reserve) и fetched_at каждого набора — raw_input_snapshot.sources
+
+## Автотесты подэтапа
 ```
-........................                                                 [100%]
-24 passed in 3.54s
+$ python -m pytest -q -p no:cacheprovider tests/test_fmp_client.py tests/test_sec_edgar_client.py tests/test_alpaca_finnhub.py tests/test_source_router.py
+...............                                                          [100%]
+15 passed in 1.75s
+[exit code 0]
 ```
 
-## ruff (линтер)
+## Live smoke (AAPL)
 ```
-All checks passed!
-```
-
-## FastAPI /health
-```
-GET /health -> 200 {'status': 'ok', 'version': '0.1.0'}
+не выполнялось: запустить на сервере `python scripts/collect_evidence.py --live`
 ```
 
-## Статус DoD 1.1
-- [x] Скаффолдинг репозитория (структура ТЗ раздел 4).
-- [x] Клиенты FMP / SEC EDGAR / Alpaca / Finnhub + source_router.
-- [x] Каждый клиент проставляет source и fetched_at в DTO.
-- [x] Переключение FMP→Alpaca (цены) и FMP→Finnhub (новости) при сбое — тесты test_source_router.py.
-- [x] docker-compose.yml (app + postgres), Dockerfile — приложение поднимается, /health отвечает.
-- [ ] ОТЛОЖЕНО до ключей (Stage 0): реальный прогон по AAPL и живое переключение источников на настоящем API.
+## Скриншоты / запись (добавить в эту папку после серверного запуска)
+- [ ] ответ бота по реальному тикеру со строками «Источники», «Режим данных», «Цена»
+- [ ] кнопка «Подробнее» с SEC-событиями и новостями (источник, дата)

@@ -1,3 +1,10 @@
+# Логи всех сервисов ротируются: до 5 файлов по 10 МБ на контейнер.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:15
@@ -8,10 +15,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-switch}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-switch} -d ${POSTGRES_DB:-switch_trading}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    logging: *default-logging
     restart: unless-stopped
 
   migrate:
@@ -24,6 +32,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    logging: *default-logging
 
   app:
     build: .
@@ -36,6 +45,17 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
     restart: unless-stopped
 
   bot:
@@ -48,6 +68,18 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      # heartbeat обновляется раз в минуту при успешном ответе Telegram API
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, sys, time; f='/tmp/bot-heartbeat'; sys.exit(0 if os.path.exists(f) and time.time() - os.path.getmtime(f) < 180 else 1)"
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging: *default-logging
     restart: unless-stopped
 
 volumes:

@@ -97,6 +97,7 @@ def compute_risk(
     fundamentals: Fundamentals | None = None,
     news_sentiment: float | None = None,
     missing_factors: list[str] | None = None,
+    missing_reasons: list[str] | None = None,
     today: date | None = None,
     config: RiskFilterConfig | None = None,
 ) -> RiskAssessment:
@@ -185,17 +186,25 @@ def compute_risk(
         )
 
     # missing_data: не хватает ключевых входных данных (цена/объём/fundamentals)
-    missing_reasons = list(features.missing)
-    if features.avg_volume_20d is None:
-        missing_reasons.append("avg_volume_20d")
-    if fundamentals is not None and fundamentals.is_incomplete:
-        missing_reasons.append("fundamentals")
-    missing_reasons.extend(missing_factors or [])
-    if missing_reasons:
+    # missing_reasons — готовый перечень причин (оценка полноты данных, v1.2+);
+    # иначе причины собираются здесь (версии формул до v1.2).
+    if missing_reasons is not None:
+        reasons = list(dict.fromkeys(missing_reasons))
+        prefix, separator = "Неполные данные: ", "; "
+    else:
+        reasons = list(features.missing)
+        if features.avg_volume_20d is None:
+            reasons.append("avg_volume_20d")
+        if fundamentals is not None and fundamentals.is_incomplete:
+            reasons.append("fundamentals")
+        reasons.extend(missing_factors or [])
+        reasons = sorted(set(reasons))
+        prefix, separator = "Нет ключевых данных: ", ", "
+    if reasons:
         flags.append(
             RiskFlag(
                 flag="missing_data",
-                reason="Нет ключевых данных: " + ", ".join(sorted(set(missing_reasons))),
+                reason=prefix + separator.join(reasons),
                 value=None,
             )
         )

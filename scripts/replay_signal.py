@@ -58,6 +58,10 @@ async def run(signal_id: int) -> bool:
     replay_flags = replay.risk.flag_names()
     ok &= stored_flags == replay_flags
     print(f"risk_flags stored={stored_flags} replay={replay_flags}")
+    stored_quality = (snap.get("data_quality") or {}).get("confidence")
+    replay_quality = replay.data_quality.confidence if replay.data_quality else None
+    ok &= stored_quality == replay_quality
+    print(f"confidence stored={stored_quality} replay={replay_quality}")
     for flag in signal.risk_flags or []:
         print(f"  - {flag['flag']}: {flag['reason']}")
     print()

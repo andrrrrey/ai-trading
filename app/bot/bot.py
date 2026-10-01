@@ -7,7 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import time
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -23,6 +27,21 @@ from app.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
+# Heartbeat для healthcheck контейнера: файл обновляется, только если Telegram API
+# отвечает (bot.get_me). Docker помечает контейнер unhealthy, если файл устарел.
+HEARTBEAT_FILE = Path(os.environ.get("BOT_HEARTBEAT_FILE", "/tmp/bot-heartbeat"))
+HEARTBEAT_INTERVAL_SECONDS = 60
+
+
+async def _heartbeat(bot: Bot) -> None:
+    while True:
+        try:
+            await bot.get_me()
+            HEARTBEAT_FILE.write_text(str(time.time()))
+        except Exception:  # noqa: BLE001 — heartbeat не должен ронять бот
+            logger.warning("heartbeat: Telegram API недоступен", exc_info=True)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
 
 def build_dispatcher(service: BotService) -> Dispatcher:
     dispatcher = Dispatcher()
@@ -32,8 +51,7 @@ def build_dispatcher(service: BotService) -> Dispatcher:
 
 async def run() -> None:
     settings = get_settings()
-    if not settings.telegram_bot_token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан (см. .env)")
+    settings.require("bot")
 
     engine = create_engine()
     session_factory = create_session_factory(engine)
@@ -50,9 +68,13 @@ async def run() -> None:
     )
     dispatcher = build_dispatcher(service)
     logger.info("Запуск Telegram-бота (long polling)")
+    heartbeat = asyncio.create_task(_heartbeat(bot))
     try:
         await dispatcher.start_polling(bot)
     finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
         await source_router.aclose()
         await engine.dispose()
 

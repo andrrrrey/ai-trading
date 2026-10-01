@@ -1,38 +1,27 @@
-# Подэтап 1.7 — артефакт проверки DoD
+# Подэтап 1.7 — База данных и история
 
-Дата: 2026-09-19T05:18:37Z
+- Сформировано: 2026-10-01 05:38 UTC (`scripts/collect_evidence.py`)
+- Commit: `a339b9a` · версия формул: `v1.2`
+- Живые прогоны: нет — выполнить на сервере с --live
 
-## pytest — БД и миграции
+## Что подтверждает (пункты чек-листа)
+- 1–7: тикер, время, исходные данные (raw_inputs), метрики, 7 факторов, Final Score, флаги, источники и версия формул
+- 8: два расчёта = две записи (append-only)
+- 9: восстановление цепочки — scripts/replay_signal.py
+
+## Автотесты подэтапа
 ```
+$ python -m pytest -q -p no:cacheprovider tests/test_db.py tests/test_migrations.py
 ......                                                                   [100%]
-6 passed in 0.89s
+6 passed in 1.42s
+[exit code 0]
 ```
 
-## pytest — весь набор
+## Воспроизведение сохранённого расчёта
 ```
-........................................................................ [ 70%]
-..............................                                           [100%]
-102 passed in 7.34s
+не выполнялось: запустить на сервере `python scripts/collect_evidence.py --live --signal-id <id>`
 ```
 
-## ruff
-```
-All checks passed!
-```
-
-## Демонстрация: два расчёта → две записи + восстановление цепочки
-```
-Записей в истории по NVDA: 2
-Сигнал #2: Final=79 status=BUY version=v1.0
-Факторы в БД: {'momentum': 93, 'growth': 95, 'valuation': 47}
-Пересчёт из raw_input_snapshot: Final=79 → совпадает: True
-```
-
-## Статус DoD 1.7
-- [x] Все таблицы раздела 5 (SQLAlchemy 2.0 async) + Alembic-миграция; схема применяется на чистой БД (test_migrations).
-- [x] signals — append-only: два расчёта одного тикера дают две записи (test_two_calculations_create_two_rows).
-- [x] Сохраняются: тикер, timestamp, price, raw_input_snapshot, 7 Factor Scores, Final Score, Risk Flags с причинами, formula_version.
-- [x] По любой записи восстанавливается цепочка вход → Final Score, результат идентичен (test_chain_reconstruction_from_snapshot).
-- [x] price_history — дедупликация по (ticker, date) через upsert.
-- [x] formula_versions — ровно одна активная версия.
-- [ ] ОТЛОЖЕНО до инфраструктуры: применение миграций к реальному PostgreSQL (docker/VPS).
+## Скриншоты / запись (добавить в эту папку после серверного запуска)
+- [ ] /history по тикеру после двух расчётов
+- [ ] вывод replay_signal.py

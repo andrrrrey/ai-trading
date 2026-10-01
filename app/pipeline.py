@@ -50,11 +50,13 @@ class Pipeline:
         ticker = ticker.upper()
         market = await self._ingestion.get_market_data(ticker)
 
+        data_issues = list(market.data_issues)
         benchmark = None
         try:
             benchmark, _ = await self._ingestion.get_price_history(BENCHMARK_TICKER)
-        except SourceError:
+        except SourceError as exc:
             logger.warning("бенчмарк %s недоступен — Relative Strength = н/д", BENCHMARK_TICKER)
+            data_issues.append(f"бенчмарк {BENCHMARK_TICKER} недоступен ({exc.source}: {exc.kind})")
 
         # Дата расчёта фиксируется в торговой зоне и сохраняется: от неё зависит
         # event_risk, и повтор расчёта по истории использует ту же дату.
@@ -70,10 +72,16 @@ class Pipeline:
             news=market.news,
             filings=market.filings,
             calc_date=calc_date,
+            news_available=market.news_available,
+            filings_available=market.filings_available,
+            data_issues=data_issues,
         )
         result = calculate(**inputs, config=self._config)
         raw_inputs = build_raw_inputs(
             **inputs,
+            quote=market.quote,
+            profile=market.profile,
+            warnings=market.warnings,
             quality={name: q.model_dump(mode="json") for name, q in market.quality.items()},
         )
         features, final, risk = result.features, result.final, result.risk
@@ -99,8 +107,22 @@ class Pipeline:
                 benchmark.fetched_at if benchmark else None,
             ),
             "news": news_sources,
-            "news_mode": source_mode("news", news_sources[0]) if news_sources else "unavailable",
+            "news_mode": (
+                source_mode("news", news_sources[0])
+                if news_sources
+                else ("no_data" if market.news_available else "unavailable")
+            ),
             "filings": sorted({item.source for item in market.filings}),
+            "quote": _source_entry(
+                "quote",
+                market.quote.source if market.quote else None,
+                market.quote.fetched_at if market.quote else None,
+            ),
+            "profile": _source_entry(
+                "profile",
+                market.profile.source if market.profile else None,
+                market.profile.fetched_at if market.profile else None,
+            ),
         }
         modes = [
             entry["mode"] for entry in source_context.values() if isinstance(entry, dict)
@@ -116,12 +138,17 @@ class Pipeline:
                 final=final,
                 risk=risk,
                 status=status,
-                price=features.price,
+                # Цена сигнала — текущая котировка; без неё — закрытие последней
+                # дневной свечи (это явно показывается пользователю).
+                price=market.quote.price if market.quote else features.price,
                 news_sentiment=result.catalysts.sentiment,
                 catalyst_context=result.catalysts.model_dump(mode="json"),
                 formula_snapshot=active_formula_version(self._config).snapshot(),
                 source_context=source_context,
                 raw_inputs=raw_inputs,
+                data_quality=(
+                    result.data_quality.model_dump() if result.data_quality else None
+                ),
             )
             logger.info(
                 "signal saved id=%s ticker=%s final=%s mode=%s",
