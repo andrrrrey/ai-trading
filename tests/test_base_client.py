@@ -100,8 +100,35 @@ async def test_timeout_is_retried_and_recorded():
     recorder = FakeHealthRecorder()
     respx.get(URL).mock(side_effect=httpx.ConnectTimeout("timeout"))
     client = make_client(recorder, max_retries=2)
-    with pytest.raises(httpx.TimeoutException):
+    with pytest.raises(SourceError) as exc_info:
         await client._get_json("/data")
     await client.aclose()
 
     assert recorder.statuses == ["error", "error"]
+    assert exc_info.value.kind == "timeout"
+    assert isinstance(exc_info.value.__cause__, httpx.TimeoutException)
+
+
+@respx.mock
+async def test_network_error_becomes_source_error():
+    recorder = FakeHealthRecorder()
+    respx.get(URL).mock(side_effect=httpx.ConnectError("refused"))
+    client = make_client(recorder, max_retries=1)
+    with pytest.raises(SourceError) as exc_info:
+        await client._get_json("/data")
+    await client.aclose()
+    assert exc_info.value.kind == "network"
+
+
+@pytest.mark.parametrize(
+    ("status", "kind"), [(401, "auth"), (402, "auth"), (403, "auth"), (404, "not_found")]
+)
+@respx.mock
+async def test_http_status_is_classified(status, kind):
+    recorder = FakeHealthRecorder()
+    respx.get(URL).mock(return_value=httpx.Response(status))
+    client = make_client(recorder, max_retries=1)
+    with pytest.raises(SourceError) as exc_info:
+        await client._get_json("/data")
+    await client.aclose()
+    assert exc_info.value.kind == kind

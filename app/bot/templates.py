@@ -60,6 +60,23 @@ def _source_line(signal: Signal) -> str:
     return ", ".join(sorted(names)) or "н/д"
 
 
+def _mode_line(signal: Signal) -> str | None:
+    sources = (signal.raw_input_snapshot or {}).get("sources", {})
+    mode = sources.get("mode")
+    if mode is None:
+        return None
+    if mode == "primary":
+        return "Режим данных: основной источник"
+    reserve = []
+    for kind, title in (("price_history", "цены"), ("benchmark", "бенчмарк")):
+        entry = sources.get(kind) or {}
+        if entry.get("mode") == "reserve":
+            reserve.append(f"{title} — {entry.get('source')}")
+    if sources.get("news_mode") == "reserve":
+        reserve.append("новости — " + ", ".join(sources.get("news") or []))
+    return "⚠️ Режим данных: РЕЗЕРВНЫЙ (" + "; ".join(reserve) + ")"
+
+
 def render_main(signal: Signal) -> str:
     flags = signal.risk_flags or []
     score = f"{signal.final_score}/100" if signal.final_score is not None else "неполный расчёт"
@@ -67,6 +84,9 @@ def render_main(signal: Signal) -> str:
     lines = [f"📊 <b>{signal.ticker}</b> — Final Score: <b>{score}</b>"]
     lines.append(f"Расчёт: {timestamp} · формула {signal.formula_version}")
     lines.append(f"Источники: {_source_line(signal)}")
+    mode_line = _mode_line(signal)
+    if mode_line:
+        lines.append(mode_line)
     if signal.price is not None:
         lines.append(f"Цена: ${signal.price:.2f}")
     lines += ["", _factor_line(signal), ""]
@@ -169,10 +189,19 @@ def render_history(ticker: str, signals: Iterable[Signal]) -> str:
     for s in signals:
         when = s.timestamp.strftime("%Y-%m-%d %H:%M")
         price = f"${s.price:.2f}" if s.price is not None else "н/д"
-        score = s.final_score if s.final_score is not None else "н/д"
-        lines.append(f"• {when} | {price} | Score {score} | {s.status}")
+        score = f"{s.final_score}/100" if s.final_score is not None else "неполный расчёт"
+        # Торговый статус формирует Rule Engine (Этап 2); до него в истории
+        # показываются только Score и риск, без BUY/WATCH/SELL.
+        lines.append(f"• {when} UTC | {price} | Score {score} | {_risk_summary(s)}")
     lines += ["", DISCLAIMER]
     return "\n".join(lines)
+
+
+def _risk_summary(signal: Signal) -> str:
+    flags = signal.risk_flags or []
+    if not flags:
+        return "Risk: без флагов"
+    return "Risk: " + ", ".join(_FLAG_TITLES.get(f["flag"], f["flag"]) for f in flags)
 
 
 def _pct(fraction: float | None) -> float | None:

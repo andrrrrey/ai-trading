@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from app.bot.templates import render_main
 from app.config import get_settings
 from app.db.models import Base
-from app.db.repository import get_signal, recompute_from_snapshot
+from app.db.repository import get_signal, recompute_from_snapshot, replay_signal
 from app.db.session import create_engine, create_session_factory
 from app.ingestion import IngestionService, build_source_router
 from app.monitoring.source_health import SourceHealthMonitor
@@ -61,9 +61,18 @@ async def run(ticker: str) -> None:
             )
             print(
                 f"signal_id={signal_id} final_score={signal.final_score} "
-                f"status={signal.status} formula={signal.formula_version}"
+                f"formula={signal.formula_version} "
+                f"risk_flags={','.join(f['flag'] for f in signal.risk_flags) or 'none'}"
             )
+            print(f"data_mode={(snapshot.get('sources') or {}).get('mode')}")
             print(f"reproducible={recomputed.final_score == signal.final_score}")
+            replay = replay_signal(signal)
+            print(
+                "replay_from_raw_inputs="
+                f"{replay.final.final_score == signal.final_score} "
+                f"(bars={len(snapshot['raw_inputs']['price_history']['bars'])}, "
+                f"news={len(snapshot['raw_inputs']['news'])})"
+            )
             print(f"telegram_render_ok={bool(render_main(signal))}")
             print(f"monitor_sources={','.join(sorted(monitor.snapshot()))}")
         finally:

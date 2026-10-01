@@ -11,14 +11,14 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.bot.service import BotService, parse_ticker
+from app.bot.service import BotService, parse_ticker, source_error_message
 from app.db.models import Signal
 from app.db.session import create_all
 from app.ingestion.base_client import SourceError
 from app.ingestion.normalization import PriceBar, PriceHistory, QualityReport
 from app.ingestion.schemas import Earnings, Filing, Fundamentals, NewsItem
 from app.ingestion.service import MarketData
-from app.ingestion.source_router import AllSourcesUnavailableError
+from app.ingestion.source_router import AllSourcesUnavailableError, TickerNotFoundError
 from app.pipeline import Pipeline
 
 FETCHED = datetime(2025, 9, 18, tzinfo=UTC)
@@ -104,7 +104,7 @@ class FakeIngestion:
         if ticker in self._unavailable:
             raise AllSourcesUnavailableError("нет источников", source="fmp")
         if ticker not in self._markets:
-            raise SourceError(f"пустой ответ {ticker}", source="fmp")
+            raise TickerNotFoundError(f"пустой ответ {ticker}", source="fmp", kind="not_found")
         return self._markets[ticker]
 
     async def get_price_history(self, ticker: str):
@@ -175,9 +175,26 @@ async def test_unknown_ticker_returns_error_no_crash(session_factory):
     service = make_service(session_factory, {"NVDA": _market("NVDA")})
     text, signal_id = await service.analyze("ZZZZ")
     assert signal_id is None
-    assert "Не удалось найти тикер ZZZZ" in text
+    assert "Тикер ZZZZ не найден" in text
     # техошибка не превратилась в торговый вывод
     assert "SELL" not in text and "BUY" not in text
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (SourceError("t", source="fmp", kind="timeout"), "превышено время ожидания"),
+        (SourceError("n", source="fmp", kind="network"), "сетевая ошибка"),
+        (SourceError("r", source="fmp", status_code=429), "лимит запросов"),
+        (SourceError("a", source="fmp", status_code=402), "тариф"),
+        (SourceError("j", source="fmp", kind="invalid_response"), "некорректный ответ"),
+    ],
+)
+def test_source_error_messages_are_specific(exc, expected):
+    text = source_error_message("AAPL", exc)
+    assert expected in text
+    assert "не найден" not in text  # техошибка не выдаётся за неизвестный тикер
+    assert "BUY" not in text and "SELL" not in text and "WATCH" not in text
 
 
 async def test_sources_unavailable_returns_service_message(session_factory):
@@ -262,3 +279,18 @@ def test_bot_layer_imports(session_factory):
     assert router is not None
     kb = main_keyboard(1, "NVDA")
     assert len(kb.inline_keyboard) == 2
+
+
+async def test_history_has_no_trading_status_before_rule_engine(session_factory):
+    service = make_service(session_factory, {"NVDA": _market("NVDA")})
+    await service.analyze("NVDA")
+    text = await service.history("NVDA")
+    assert "Score" in text and "Risk" in text
+    for status in ("BUY", "WATCH", "SELL"):
+        assert status not in text
+
+
+async def test_unknown_ticker_is_not_saved(session_factory):
+    service = make_service(session_factory, {"NVDA": _market("NVDA")})
+    await service.analyze("ZZZZ")
+    assert "пуста" in await service.history("ZZZZ")

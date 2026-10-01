@@ -28,13 +28,46 @@ logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
-class SourceError(Exception):
-    """Базовая ошибка обращения к источнику данных."""
+# Классы причин сбоя источника (ТЗ 5.1: timeout, API error, rate limit, no data).
+ERROR_TIMEOUT = "timeout"
+ERROR_NETWORK = "network"
+ERROR_RATE_LIMIT = "rate_limit"
+ERROR_AUTH = "auth"  # 401/402/403: ключ недействителен или не хватает тарифа
+ERROR_NOT_FOUND = "not_found"
+ERROR_HTTP = "http_error"
+ERROR_INVALID_RESPONSE = "invalid_response"
+ERROR_NO_DATA = "no_data"
 
-    def __init__(self, message: str, *, source: str, status_code: int | None = None):
+
+def _kind_for_status(status_code: int | None) -> str:
+    if status_code == 429:
+        return ERROR_RATE_LIMIT
+    if status_code in (401, 402, 403):
+        return ERROR_AUTH
+    if status_code == 404:
+        return ERROR_NOT_FOUND
+    return ERROR_HTTP
+
+
+class SourceError(Exception):
+    """Базовая ошибка обращения к источнику данных.
+
+    ``kind`` — класс причины (см. ERROR_*): по нему source_router решает про
+    переключение на резерв, а бот формирует понятное пользователю сообщение.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source: str,
+        status_code: int | None = None,
+        kind: str | None = None,
+    ):
         super().__init__(message)
         self.source = source
         self.status_code = status_code
+        self.kind = kind or (_kind_for_status(status_code) if status_code else ERROR_HTTP)
 
 
 class RetryableSourceError(SourceError):
@@ -47,8 +80,9 @@ class RetryableSourceError(SourceError):
         source: str,
         status_code: int | None = None,
         retry_after: float | None = None,
+        kind: str | None = None,
     ):
-        super().__init__(message, source=source, status_code=status_code)
+        super().__init__(message, source=source, status_code=status_code, kind=kind)
         self.retry_after = retry_after
 
 
@@ -172,7 +206,10 @@ class BaseSourceClient:
 
         Бросает RetryableSourceError на временных сбоях (после исчерпания попыток
         она тоже долетает наружу — вызывающий source_router переключается на резерв)
-        и SourceError на постоянных (4xx кроме 429, ошибка JSON).
+        и SourceError на постоянных (4xx кроме 429, ошибка JSON). Таймаут и сетевой
+        сбой после исчерпания попыток тоже превращаются в SourceError (kind
+        timeout/network), чтобы router переключился на резерв, а бот показал
+        понятную причину, а не «внутреннюю ошибку».
         """
         merged_params = {**self._default_params, **(params or {})}
         retryer = AsyncRetrying(
@@ -183,9 +220,22 @@ class BaseSourceClient:
             ),
             reraise=True,
         )
-        async for attempt in retryer:
-            with attempt:
-                return await self._attempt_get_json(path, merged_params, headers)
+        try:
+            async for attempt in retryer:
+                with attempt:
+                    return await self._attempt_get_json(path, merged_params, headers)
+        except httpx.TimeoutException as exc:
+            raise SourceError(
+                f"{self.source}: превышено время ожидания ответа",
+                source=self.source,
+                kind=ERROR_TIMEOUT,
+            ) from exc
+        except httpx.TransportError as exc:
+            raise SourceError(
+                f"{self.source}: источник недоступен (сетевая ошибка)",
+                source=self.source,
+                kind=ERROR_NETWORK,
+            ) from exc
 
     async def _attempt_get_json(
         self,
@@ -198,8 +248,9 @@ class BaseSourceClient:
             response = await self._client.get(path, params=params, headers=headers)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             latency_ms = (time.perf_counter() - started) * 1000
+            kind = ERROR_TIMEOUT if isinstance(exc, httpx.TimeoutException) else ERROR_NETWORK
             await self._health.record(
-                HealthRecord(self.source, "error", latency_ms, repr(exc))
+                HealthRecord(self.source, "error", latency_ms, f"{kind}: {exc!r}")
             )
             raise
 
@@ -212,7 +263,7 @@ class BaseSourceClient:
                     self.source,
                     "error",
                     latency_ms,
-                    f"HTTP {response.status_code}",
+                    f"{_kind_for_status(response.status_code)}: HTTP {response.status_code}",
                 )
             )
             raise RetryableSourceError(
@@ -225,7 +276,10 @@ class BaseSourceClient:
         if response.status_code >= 400:
             await self._health.record(
                 HealthRecord(
-                    self.source, "error", latency_ms, f"HTTP {response.status_code}"
+                    self.source,
+                    "error",
+                    latency_ms,
+                    f"{_kind_for_status(response.status_code)}: HTTP {response.status_code}",
                 )
             )
             raise SourceError(
@@ -238,10 +292,12 @@ class BaseSourceClient:
             payload = response.json()
         except ValueError as exc:
             await self._health.record(
-                HealthRecord(self.source, "error", latency_ms, f"invalid JSON: {exc}")
+                HealthRecord(self.source, "error", latency_ms, f"{ERROR_INVALID_RESPONSE}: {exc}")
             )
             raise SourceError(
-                f"{self.source}: некорректный JSON в ответе", source=self.source
+                f"{self.source}: некорректный JSON в ответе",
+                source=self.source,
+                kind=ERROR_INVALID_RESPONSE,
             ) from exc
 
         await self._health.record(HealthRecord(self.source, "ok", latency_ms, None))

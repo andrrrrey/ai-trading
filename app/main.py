@@ -16,6 +16,7 @@ from app import __version__
 from app.config import get_settings
 from app.db.session import create_engine, create_session_factory
 from app.monitoring import SourceHealthMonitor, get_monitor
+from app.monitoring.source_health import SOURCE_ROLES, latest_data_mode
 
 logging.basicConfig(level=get_settings().log_level)
 
@@ -24,7 +25,9 @@ logging.basicConfig(level=get_settings().log_level)
 async def lifespan(app: FastAPI):
     engine = create_engine()
     app.state.db_engine = engine
-    app.state.source_monitor = SourceHealthMonitor(create_session_factory(engine))
+    session_factory = create_session_factory(engine)
+    app.state.session_factory = session_factory
+    app.state.source_monitor = SourceHealthMonitor(session_factory)
     try:
         yield
     finally:
@@ -52,9 +55,22 @@ async def health() -> dict:
         logging.exception("не удалось прочитать состояние источников из БД")
         sources = get_monitor().snapshot()
     sources_ok = bool(sources) and all(item["status"] == "ok" for item in sources.values())
+    for name, item in sources.items():
+        item["role"] = SOURCE_ROLES.get(name, "additional")
+
+    data_mode = None
+    session_factory = getattr(app.state, "session_factory", None)
+    if session_factory is not None:
+        try:
+            data_mode = await latest_data_mode(session_factory)
+        except Exception:
+            logging.exception("не удалось прочитать режим источников из БД")
     return {
         "status": "ok",  # liveness приложения
         "version": __version__,
         "sources_ok": sources_ok,
         "sources": sources,
+        # primary — последний расчёт выполнен на основных источниках,
+        # reserve — хотя бы часть данных пришла из резервного (Alpaca/Finnhub).
+        "data_mode": data_mode,
     }

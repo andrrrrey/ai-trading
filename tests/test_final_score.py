@@ -126,3 +126,12 @@ def test_active_formula_version_snapshot():
     assert fv.final_score_weights["momentum"] == 0.20
     snap = fv.snapshot()
     assert set(snap) == {"version", "final_score_weights", "factor_params"}
+
+
+def test_weights_must_sum_to_one():
+    import pytest
+
+    from app.scoring.thresholds import FinalScoreWeights
+
+    with pytest.raises(ValueError):
+        FinalScoreWeights(momentum=0.30)

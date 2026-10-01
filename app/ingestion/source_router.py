@@ -11,7 +11,11 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from app.ingestion.alpaca_client import AlpacaClient
-from app.ingestion.base_client import SourceError
+from app.ingestion.base_client import (
+    ERROR_NO_DATA,
+    ERROR_NOT_FOUND,
+    SourceError,
+)
 from app.ingestion.finnhub_client import FinnhubClient
 from app.ingestion.fmp_client import FMPClient
 from app.ingestion.schemas import (
@@ -29,8 +33,31 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+# Основной источник по каждому виду данных: всё остальное — резервный режим.
+PRIMARY_SOURCES: dict[str, str] = {
+    "price_history": "fmp",
+    "fundamentals": "fmp",
+    "earnings": "fmp",
+    "news": "fmp",
+    "filings": "sec_edgar",
+}
+
+_NO_DATA_KINDS = frozenset({ERROR_NO_DATA, ERROR_NOT_FOUND})
+
+
+def source_mode(data_kind: str, source: str | None) -> str:
+    """«primary» если данные пришли из основного источника, иначе «reserve»."""
+    if not source:
+        return "unavailable"
+    return "primary" if PRIMARY_SOURCES.get(data_kind) == source else "reserve"
+
+
 class AllSourcesUnavailableError(SourceError):
     """Основной и резервный источники недоступны для критичных данных."""
+
+
+class TickerNotFoundError(SourceError):
+    """Источники отвечают штатно, но данных по тикеру нет — тикер неизвестен."""
 
 
 class SourceRouter:
@@ -60,11 +87,19 @@ class SourceRouter:
         primary_name: str,
         fallback: Callable[[], Awaitable[T]] | None = None,
         fallback_name: str | None = None,
+        no_data_means_unknown_ticker: bool = False,
     ) -> T:
         try:
             return await primary()
         except SourceError as primary_exc:
+            unknown = no_data_means_unknown_ticker and primary_exc.kind in _NO_DATA_KINDS
             if fallback is None:
+                if unknown:
+                    raise TickerNotFoundError(
+                        f"{what}: {primary_name} не знает такого тикера",
+                        source=primary_name,
+                        kind=ERROR_NOT_FOUND,
+                    ) from primary_exc
                 raise
             logger.warning(
                 "source=%s failed for %s (%s) → переключение на резерв %s",
@@ -76,10 +111,19 @@ class SourceRouter:
             try:
                 return await fallback()
             except SourceError as fallback_exc:
+                if unknown:
+                    # Основной источник штатно ответил «нет такого тикера».
+                    raise TickerNotFoundError(
+                        f"{what}: ни {primary_name}, ни {fallback_name} не знают тикер",
+                        source=primary_name,
+                        kind=ERROR_NOT_FOUND,
+                    ) from fallback_exc
                 raise AllSourcesUnavailableError(
                     f"{what}: и основной ({primary_name}), и резервный "
                     f"({fallback_name}) источники недоступны",
                     source=primary_name,
+                    status_code=primary_exc.status_code,
+                    kind=primary_exc.kind,
                 ) from fallback_exc
 
     async def get_price_history(self, ticker: str) -> RawPriceHistory:
@@ -93,6 +137,7 @@ class SourceRouter:
             primary_name="fmp",
             fallback=fallback,
             fallback_name="alpaca" if fallback else None,
+            no_data_means_unknown_ticker=True,
         )
 
     async def get_news(self, ticker: str) -> list[NewsItem]:

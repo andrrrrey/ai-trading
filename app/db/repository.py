@@ -15,6 +15,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.calculation import CalculationResult, replay_from_raw_inputs
 from app.db.models import (
     FactorScoresRow,
     FormulaVersionRow,
@@ -57,6 +58,7 @@ async def save_signal(
     catalyst_context: dict | None = None,
     formula_snapshot: dict | None = None,
     source_context: dict | None = None,
+    raw_inputs: dict | None = None,
     timestamp: datetime | None = None,
 ) -> Signal:
     """Сохраняет один сигнал (append-only) с полным снимком входных данных."""
@@ -72,6 +74,9 @@ async def save_signal(
             "final_rule": final.rule,
             "formula_config": formula_snapshot or active_formula_version().snapshot(),
         },
+        # Исходные данные расчёта (OHLCV тикера и SPY, fundamentals, earnings,
+        # новости, filings, дата расчёта) — для воспроизведения всей цепочки.
+        "raw_inputs": raw_inputs,
     }
     signal = Signal(
         ticker=features.ticker,
@@ -110,6 +115,34 @@ async def get_signal(session: AsyncSession, signal_id: int) -> Signal | None:
     return result.scalar_one_or_none()
 
 
+def stored_scoring_config(signal: Signal) -> ScoringConfig:
+    """Версия формул/весов, с которой был выполнен расчёт этой записи."""
+    stored_formula = ((signal.raw_input_snapshot or {}).get("calculation") or {}).get(
+        "formula_config"
+    )
+    if not stored_formula:
+        return load_scoring_config()
+    return ScoringConfig.model_validate(
+        {
+            "version": stored_formula["version"],
+            "final_score_weights": stored_formula["final_score_weights"],
+            "factor_scores": stored_formula["factor_params"],
+        }
+    )
+
+
+def replay_signal(signal: Signal, config: ScoringConfig | None = None) -> CalculationResult:
+    """Полный повтор расчёта от сохранённых исходных данных до Final Score и Risk.
+
+    В отличие от ``recompute_from_snapshot`` (метрики → Score), здесь заново
+    считаются и сами метрики — из сохранённых OHLCV, fundamentals и новостей.
+    """
+    raw = (signal.raw_input_snapshot or {}).get("raw_inputs")
+    if not raw:
+        raise ValueError(f"signal {signal.id}: исходные данные не сохранены (старая запись)")
+    return replay_from_raw_inputs(raw, config or stored_scoring_config(signal))
+
+
 def recompute_from_snapshot(signal: Signal, config: ScoringConfig | None = None) -> FinalScore:
     """Восстанавливает Final Score из raw_input_snapshot записи истории.
 
@@ -117,19 +150,7 @@ def recompute_from_snapshot(signal: Signal, config: ScoringConfig | None = None)
     версии формул должен дать идентичный final_score (ТЗ 7).
     """
     snap = signal.raw_input_snapshot
-    stored_formula = (snap.get("calculation") or {}).get("formula_config")
-    if config is not None:
-        cfg = config
-    elif stored_formula:
-        cfg = ScoringConfig.model_validate(
-            {
-                "version": stored_formula["version"],
-                "final_score_weights": stored_formula["final_score_weights"],
-                "factor_scores": stored_formula["factor_params"],
-            }
-        )
-    else:
-        cfg = load_scoring_config()
+    cfg = config or stored_scoring_config(signal)
     features = FeatureSet.model_validate(snap["features"])
     fundamentals = Fundamentals.model_validate(snap["fundamentals"])
     factor_scores = compute_factor_scores(

@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 DEFAULT_THRESHOLDS_PATH = Path(__file__).resolve().parents[2] / "config" / "thresholds.yaml"
 
@@ -69,6 +69,13 @@ class FinalScoreWeights(BaseModel):
     volume: float = 0.10
     valuation: float = 0.10
     catalysts: float = 0.15
+
+    @model_validator(mode="after")
+    def _weights_sum_to_one(self) -> FinalScoreWeights:
+        total = sum(self.model_dump().values())
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(f"сумма весов Final Score должна быть 1.0, получено {total}")
+        return self
 
     def as_dict(self) -> dict[str, float]:
         return self.model_dump()

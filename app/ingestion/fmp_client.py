@@ -10,7 +10,12 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from app.ingestion.base_client import BaseSourceClient, HealthRecorder, SourceError
+from app.ingestion.base_client import (
+    ERROR_NO_DATA,
+    BaseSourceClient,
+    HealthRecorder,
+    SourceError,
+)
 from app.ingestion.schemas import (
     Earnings,
     Fundamentals,
@@ -93,6 +98,11 @@ class FMPClient(BaseSourceClient):
             for row in rows
             if _to_date(row.get("date")) is not None
         ]
+        if not bars:
+            # FMP на неизвестный символ отвечает HTTP 200 и пустым списком.
+            raise SourceError(
+                f"fmp: нет истории цен для {ticker}", source=self.source, kind=ERROR_NO_DATA
+            )
         return RawPriceHistory(ticker=ticker, bars=bars, source=self.source, fetched_at=fetched)
 
     async def get_profile(self, ticker: str) -> dict[str, Any]:
@@ -199,7 +209,9 @@ def _as_rows(data: Any) -> list[dict[str, Any]]:
 def _first_row(data: Any, *, source: str, ticker: str, what: str) -> dict[str, Any]:
     rows = _as_rows(data)
     if not rows:
-        raise SourceError(f"{source}: пустой ответ {what} для {ticker}", source=source)
+        raise SourceError(
+            f"{source}: пустой ответ {what} для {ticker}", source=source, kind=ERROR_NO_DATA
+        )
     return rows[0]
 
 

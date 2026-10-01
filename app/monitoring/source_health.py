@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import SourceHealth
+from app.db.models import Signal, SourceHealth
 from app.ingestion.base_client import HealthRecord
 
 logger = logging.getLogger(__name__)
@@ -123,6 +123,43 @@ class SourceHealthMonitor:
         for source, state in states.items():
             state.total_errors = error_totals.get(source, 0)
         return {source: state.model_dump(mode="json") for source, state in sorted(states.items())}
+
+
+# Роль источника в системе (ТЗ 4): основной / официальный / резервный.
+SOURCE_ROLES: dict[str, str] = {
+    "fmp": "primary",
+    "sec_edgar": "official",
+    "alpaca": "reserve",
+    "finnhub": "reserve",
+}
+
+
+async def latest_data_mode(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> dict | None:
+    """Какие источники (основной или резервный) использованы в последнем расчёте.
+
+    Берётся из последней записи signals — общей для процессов бота и API.
+    """
+    async with session_factory() as session:
+        signal = (
+            await session.execute(select(Signal).order_by(Signal.id.desc()).limit(1))
+        ).scalar_one_or_none()
+    if signal is None:
+        return None
+    sources = (signal.raw_input_snapshot or {}).get("sources", {})
+    return {
+        "mode": sources.get("mode", "unknown"),
+        "signal_id": signal.id,
+        "ticker": signal.ticker,
+        "timestamp": signal.timestamp.isoformat(),
+        "price_history": sources.get("price_history"),
+        "benchmark": sources.get("benchmark"),
+        "fundamentals": sources.get("fundamentals"),
+        "earnings": sources.get("earnings"),
+        "news": {"sources": sources.get("news"), "mode": sources.get("news_mode")},
+        "filings": sources.get("filings"),
+    }
 
 
 @lru_cache

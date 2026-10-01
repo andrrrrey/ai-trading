@@ -7,13 +7,16 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Сначала метаданные проекта — для кэширования слоя зависимостей.
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements.lock ./
 COPY app ./app
-RUN pip install --upgrade pip && pip install .
+# requirements.lock фиксирует точные версии зависимостей (перечень и лицензии —
+# docs/THIRD_PARTY_LICENSES.md), чтобы сборка была воспроизводимой.
+RUN pip install --upgrade pip && pip install -c requirements.lock .
 
 COPY config ./config
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+COPY scripts ./scripts
 
 # По умолчанию поднимается служебный FastAPI (health/оркестратор).
 # Telegram-бот запускается отдельным процессом/сервисом (подэтап 1.9).
