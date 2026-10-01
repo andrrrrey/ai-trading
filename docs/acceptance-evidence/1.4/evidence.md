@@ -1,7 +1,7 @@
 # Подэтап 1.4 — Семь факторных оценок
 
-- Сформировано: 2026-10-01 12:57 UTC (`scripts/collect_evidence.py`)
-- Commit: `44a6e6a` · версия формул: `v1.3`
+- Сформировано: 2026-10-01 20:58 UTC (`scripts/collect_evidence.py`)
+- Commit: `793d52c` · версия формул: `v1.4`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
@@ -13,7 +13,7 @@
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_factor_scores.py tests/test_catalysts.py
 .........................                                                [100%]
-25 passed in 0.38s
+25 passed in 0.41s
 [exit code 0]
 ```
 
