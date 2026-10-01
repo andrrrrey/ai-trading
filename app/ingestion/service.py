@@ -51,6 +51,13 @@ class MarketData(BaseModel):
     is_incomplete: bool
     quote: Quote | None = None
     profile: CompanyProfile | None = None
+    # API дат отчётности ответил (даже если будущей даты нет).
+    earnings_api_available: bool = True
+    # Кто ответил по новостям / SEC и когда (в т. ч. при пустом ответе).
+    news_source: str | None = None
+    news_fetched_at: datetime | None = None
+    filings_source: str | None = None
+    filings_fetched_at: datetime | None = None
     news_available: bool = True
     filings_available: bool = True
     # Причины неполноты входных данных → флаг missing_data в Risk Filter.
@@ -89,24 +96,26 @@ class IngestionService:
         (
             (price_history, price_q),
             (fundamentals, fund_q),
-            (earnings, earnings_q),
+            (earnings, earnings_q, earnings_api_ok),
         ) = await asyncio.gather(
             self.get_price_history(ticker),
             self.get_fundamentals(ticker, period=period),
             self._optional_earnings(ticker),
         )
         (
-            (news, news_error),
-            (filings, filings_error),
+            (news_feed, news_error),
+            (filings_feed, filings_error),
             (quote, quote_error),
             (profile, profile_error),
         ) = await asyncio.gather(
-            self._optional(self._router.get_news(ticker), "news", ticker, default=[]),
-            self._optional(self._router.get_filings(ticker), "filings", ticker, default=[]),
+            self._optional(self._router.get_news_feed(ticker), "news", ticker),
+            self._optional(self._router.get_filings_feed(ticker), "filings", ticker),
             self._optional(self._router.get_quote(ticker), "quote", ticker),
             self._optional(self._router.get_profile(ticker), "profile", ticker),
         )
 
+        news = news_feed.items if news_feed else []
+        filings = filings_feed.items if filings_feed else []
         quality = {
             "price_history": price_q,
             "fundamentals": fund_q,
@@ -145,32 +154,59 @@ class IngestionService:
             quote=quote,
             profile=profile,
             news_available=news_error is None,
+            earnings_api_available=earnings_api_ok,
+            news_source=news_feed.source if news_feed else None,
+            news_fetched_at=news_feed.fetched_at if news_feed else None,
+            filings_source=filings_feed.source if filings_feed else None,
+            filings_fetched_at=filings_feed.fetched_at if filings_feed else None,
             filings_available=filings_error is None,
             data_issues=data_issues,
             warnings=warnings,
         )
 
-    async def _optional_earnings(self, ticker: str) -> tuple[Earnings, QualityReport]:
+    async def _optional_earnings(
+        self, ticker: str
+    ) -> tuple[Earnings, QualityReport, bool]:
+        """(earnings, отчёт качества, ответил ли API дат отчётности)."""
         try:
             earnings = await self._router.get_earnings(ticker)
-            return earnings, QualityReport(source=earnings.source, total_rows=1, valid_rows=1)
         except SourceError as exc:
             logger.warning("earnings unavailable ticker=%s: %s", ticker, exc)
+            source = exc.source or "unavailable"
             return (
                 Earnings(
                     ticker=ticker,
                     next_earnings_date=None,
-                    source=exc.source or "unavailable",
+                    source=source,
                     fetched_at=datetime.now(UTC),
                 ),
                 QualityReport(
-                    source=exc.source or "unavailable",
+                    source=source,
                     total_rows=1,
                     valid_rows=0,
                     is_incomplete=True,
                     issues=[f"недоступна ({exc.source}: {exc.kind})"],
                 ),
+                False,
             )
+        if earnings.next_earnings_date is None:
+            # API ответил, но будущей даты нет: риск близкой отчётности не проверить.
+            return (
+                earnings,
+                QualityReport(
+                    source=earnings.source,
+                    total_rows=1,
+                    valid_rows=0,
+                    is_incomplete=True,
+                    issues=[f"{earnings.source} не вернул будущую дату отчётности"],
+                ),
+                True,
+            )
+        return (
+            earnings,
+            QualityReport(source=earnings.source, total_rows=1, valid_rows=1),
+            True,
+        )
 
     @staticmethod
     async def _optional(coro, what: str, ticker: str, *, default=None):

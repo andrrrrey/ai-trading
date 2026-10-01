@@ -22,6 +22,7 @@ class FormulaVersion(BaseModel):
     final_score_weights: dict[str, float]
     factor_params: dict
     data_quality: dict | None = None
+    risk_filter: dict | None = None
     is_active: bool = True
 
     def snapshot(self) -> dict:
@@ -33,6 +34,8 @@ class FormulaVersion(BaseModel):
         }
         if self.data_quality is not None:
             snapshot["data_quality"] = self.data_quality
+        if self.risk_filter is not None:
+            snapshot["risk_filter"] = self.risk_filter
         return snapshot
 
 
@@ -44,5 +47,6 @@ def active_formula_version(config: ScoringConfig | None = None) -> FormulaVersio
         final_score_weights=cfg.final_score_weights.as_dict(),
         factor_params=cfg.factor_scores.model_dump(),
         data_quality=cfg.data_quality.model_dump() if cfg.data_quality else None,
+        risk_filter=cfg.risk_filter.model_dump(),
         is_active=True,
     )

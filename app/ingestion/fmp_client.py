@@ -40,6 +40,20 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _first_number(*values: Any) -> float | None:
+    """Первое числовое значение из альтернативных полей.
+
+    В отличие от ``a or b`` не теряет корректный ноль: EPS, маржа, D/E или P/E
+    равные 0 — это данные, а не их отсутствие. Пропуском считаются только None,
+    пустая строка и нечисловое значение.
+    """
+    for value in values:
+        number = _to_float(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _to_date(value: Any) -> date | None:
     if not value:
         return None
@@ -124,7 +138,7 @@ class FMPClient(BaseSourceClient):
             industry=row.get("industry") or None,
             country=row.get("country") or None,
             currency=row.get("currency") or None,
-            market_cap=_to_float(row.get("marketCap") or row.get("mktCap")),
+            market_cap=_first_number(row.get("marketCap"), row.get("mktCap")),
             is_actively_trading=active if isinstance(active, bool) else None,
             source=self.source,
             fetched_at=_now(),
@@ -170,13 +184,13 @@ class FMPClient(BaseSourceClient):
             # В stable API FMP EPS публикуется как netIncomePerShare в ratios.
             # Старые имена оставлены как fallback для совместимости с моками и
             # предыдущими версиями API.
-            eps=_to_float(r.get("netIncomePerShare") or m.get("eps") or r.get("eps")),
-            gross_margin=_to_float(r.get("grossProfitMargin") or m.get("grossProfitMargin")),
-            debt_equity=_to_float(
-                r.get("debtToEquityRatio") or r.get("debtEquityRatio") or m.get("debtToEquity")
+            eps=_first_number(r.get("netIncomePerShare"), m.get("eps"), r.get("eps")),
+            gross_margin=_first_number(r.get("grossProfitMargin"), m.get("grossProfitMargin")),
+            debt_equity=_first_number(
+                r.get("debtToEquityRatio"), r.get("debtEquityRatio"), m.get("debtToEquity")
             ),
-            pe=_to_float(
-                r.get("priceToEarningsRatio") or r.get("priceEarningsRatio") or m.get("peRatio")
+            pe=_first_number(
+                r.get("priceToEarningsRatio"), r.get("priceEarningsRatio"), m.get("peRatio")
             ),
             forward_pe=_to_float(m.get("forwardPE")),
             source=self.source,

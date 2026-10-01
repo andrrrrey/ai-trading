@@ -10,7 +10,7 @@ import logging
 import re
 
 from app.bot import templates
-from app.db.repository import get_signal, list_signals
+from app.db.repository import get_signal, list_signals, touch_telegram_user
 from app.ingestion.base_client import (
     ERROR_AUTH,
     ERROR_INVALID_RESPONSE,
@@ -103,6 +103,14 @@ class BotService:
         async with self._session_factory() as session:
             signal = await get_signal(session, signal_id)
         return (templates.render_main(signal), signal_id)
+
+    async def touch_user(self, chat_id: int, username: str | None) -> None:
+        """Учёт пользователя в telegram_users; сбой учёта не мешает ответу."""
+        try:
+            async with self._session_factory() as session:
+                await touch_telegram_user(session, chat_id, username)
+        except Exception:  # noqa: BLE001
+            logger.exception("не удалось обновить telegram_users для %s", chat_id)
 
     async def section(self, signal_id: int, section: str) -> str:
         """Рендер раздела по кнопке (details / metrics / risk) для конкретного сигнала."""

@@ -29,11 +29,26 @@ class AllowedUsersMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class UserTrackingMiddleware(BaseMiddleware):
+    """Обновляет telegram_users (первый/последний визит) для допущенных пользователей."""
+
+    def __init__(self, service: BotService):
+        self._service = service
+
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if user is not None:
+            await self._service.touch_user(user.id, user.username)
+        return await handler(event, data)
+
+
 def build_router(service: BotService) -> Router:
     router = Router()
     middleware = AllowedUsersMiddleware(set(get_settings().telegram_allowed_ids))
     router.message.middleware(middleware)
     router.callback_query.middleware(middleware)
+    # после проверки доступа: учитываются только допущенные пользователи
+    router.message.middleware(UserTrackingMiddleware(service))
 
     @router.message(CommandStart())
     async def on_start(message: Message) -> None:

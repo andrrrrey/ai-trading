@@ -136,3 +136,22 @@ async def test_recovery_clears_current_error_but_keeps_last_failure(session_fact
         assert state["last_error"] is None and state["last_error_kind"] is None
         assert state["last_failure_error"] == "timeout: down"
         assert state["last_failure_at"] is not None
+
+
+def test_stale_success_is_not_reported_as_ok():
+    now = datetime.now(UTC)
+    old = now - timedelta(hours=2)
+    state = classify(
+        SourceState(source="fmp", status="ok", last_checked_at=old, last_success_at=old,
+                    last_latency_ms=80), now
+    )
+    assert state.age_seconds == 7200
+    assert state.stale is True
+    assert state.state == "unknown"  # не «ok»: проверка устарела
+    assert overall_mode({"fmp": state.model_dump()}) == "unknown"
+
+    fresh = classify(
+        SourceState(source="fmp", status="ok", last_checked_at=now, last_success_at=now,
+                    last_latency_ms=80), now
+    )
+    assert fresh.state == "ok" and fresh.stale is False

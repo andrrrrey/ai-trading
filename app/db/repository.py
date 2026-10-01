@@ -7,7 +7,7 @@ Final Score (принцип воспроизводимости, ТЗ 7, 13).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -19,15 +19,21 @@ from app.calculation import CalculationResult, replay_from_raw_inputs
 from app.db.models import (
     FactorScoresRow,
     FormulaVersionRow,
+    FundamentalsSnapshot,
+    MarketContext,
     Signal,
+    TelegramUser,
 )
 from app.db.models import (
     PriceHistory as PriceHistoryRow,
 )
+from app.db.models import (
+    Ticker as TickerRow,
+)
 from app.features.catalysts import CatalystAnalysis
 from app.features.indicators import FeatureSet
 from app.ingestion.normalization import PriceHistory
-from app.ingestion.schemas import Fundamentals
+from app.ingestion.schemas import CompanyProfile, Fundamentals
 from app.risk.risk_filter import RiskAssessment
 from app.scoring import (
     FactorScores,
@@ -134,6 +140,9 @@ def stored_scoring_config(signal: Signal) -> ScoringConfig:
             "factor_scores": stored_formula["factor_params"],
             # версии до v1.2 не знали уровней неполноты — повтор без них
             "data_quality": stored_formula.get("data_quality"),
+            # до v1.4 пороги Risk Filter не сохранялись: они были равны значениям
+            # по умолчанию, а не текущему config/thresholds.yaml
+            "risk_filter": stored_formula.get("risk_filter") or {},
         }
     )
 
@@ -179,36 +188,133 @@ def factor_scores_from_snapshot(snap: dict, cfg: ScoringConfig) -> FactorScores:
     )
 
 
-async def upsert_price_history(session: AsyncSession, history: PriceHistory) -> int:
-    """Записывает бары с дедупликацией по (ticker, date); возвращает число баров."""
-    for bar in history.bars:
-        existing = await session.execute(
-            select(PriceHistoryRow).where(
-                PriceHistoryRow.ticker == bar.ticker,
-                PriceHistoryRow.date == bar.date,
-            )
+def _dialect_insert(session: AsyncSession, model):
+    dialect = session.bind.dialect.name
+    if dialect == "postgresql":
+        return postgresql_insert(model)
+    if dialect == "sqlite":
+        return sqlite_insert(model)
+    raise NotImplementedError(f"upsert не поддержан для диалекта {dialect}")
+
+
+async def upsert_price_history(
+    session: AsyncSession, history: PriceHistory, *, commit: bool = True
+) -> int:
+    """Записывает бары одним upsert по (ticker, date); возвращает число баров.
+
+    Повторная загрузка той же даты обновляет значения, дублей не возникает
+    (UNIQUE(ticker, date)).
+    """
+    rows = [
+        {
+            "ticker": bar.ticker,
+            "date": bar.date,
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "source": bar.source,
+            "fetched_at": bar.fetched_at,
+        }
+        for bar in history.bars
+    ]
+    # пакетами: лимит параметров запроса (SQLite 32 766, PostgreSQL 65 535)
+    for start in range(0, len(rows), 1000):
+        stmt = _dialect_insert(session, PriceHistoryRow).values(rows[start : start + 1000])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[PriceHistoryRow.ticker, PriceHistoryRow.date],
+            set_={
+                col: getattr(stmt.excluded, col)
+                for col in ("open", "high", "low", "close", "volume", "source", "fetched_at")
+            },
         )
-        row = existing.scalar_one_or_none()
-        if row is None:
-            session.add(
-                PriceHistoryRow(
-                    ticker=bar.ticker,
-                    date=bar.date,
-                    open=bar.open,
-                    high=bar.high,
-                    low=bar.low,
-                    close=bar.close,
-                    volume=bar.volume,
-                    source=bar.source,
-                    fetched_at=bar.fetched_at,
-                )
-            )
-        else:
-            row.open, row.high, row.low = bar.open, bar.high, bar.low
-            row.close, row.volume = bar.close, bar.volume
-            row.source, row.fetched_at = bar.source, bar.fetched_at
+        await session.execute(stmt)
+    if commit:
+        await session.commit()
+    return len(rows)
+
+
+async def upsert_ticker(
+    session: AsyncSession, ticker: str, profile: CompanyProfile | None = None
+) -> None:
+    """Справочник тикеров: название и биржа из профиля компании (если есть)."""
+    values = {"ticker": ticker.upper(), "is_active": True}
+    update_values: dict = {"is_active": True}
+    if profile is not None:
+        values |= {"name": profile.company_name, "exchange": profile.exchange}
+        update_values |= {"name": profile.company_name, "exchange": profile.exchange}
+    stmt = _dialect_insert(session, TickerRow).values(**values)
+    stmt = stmt.on_conflict_do_update(index_elements=[TickerRow.ticker], set_=update_values)
+    await session.execute(stmt)
+
+
+async def save_calculation_context(
+    session: AsyncSession,
+    *,
+    signal: Signal,
+    calc_date: date,
+    fundamentals: Fundamentals,
+    features: FeatureSet,
+    risk: RiskAssessment,
+    next_earnings_date: date | None,
+    news_sentiment: float | None,
+    profile: CompanyProfile | None,
+    price_histories: list[PriceHistory],
+) -> None:
+    """Раскладывает данные расчёта по профильным таблицам схемы (ТЗ раздел 5).
+
+    Полный снимок для воспроизведения остаётся в signals.raw_input_snapshot;
+    таблицы ниже дают обычный реляционный доступ к тем же данным:
+    tickers, price_history (OHLCV тикера и SPY), fundamentals_snapshot и
+    market_context — со ссылкой на signal_id.
+    """
+    await upsert_ticker(session, signal.ticker, profile)
+    for history in price_histories:
+        await upsert_price_history(session, history, commit=False)
+    session.add(
+        FundamentalsSnapshot(
+            signal_id=signal.id,
+            ticker=signal.ticker,
+            as_of_date=calc_date,
+            revenue_growth=fundamentals.revenue_growth,
+            eps_growth=fundamentals.eps_growth,
+            eps=fundamentals.eps,
+            gross_margin=fundamentals.gross_margin,
+            debt_equity=fundamentals.debt_equity,
+            pe=fundamentals.pe,
+            forward_pe=fundamentals.forward_pe,
+            source=fundamentals.source,
+        )
+    )
+    session.add(
+        MarketContext(
+            signal_id=signal.id,
+            ticker=signal.ticker,
+            as_of_date=calc_date,
+            next_earnings_date=next_earnings_date,
+            gap_pct=features.gap_pct,
+            avg_volume_20d=features.avg_volume_20d,
+            distance_to_ema_pct=features.distance_to_ema20,
+            news_sentiment=news_sentiment,
+            negative_news_flag="news_risk" in risk.flag_names(),
+        )
+    )
     await session.commit()
-    return len(history.bars)
+
+
+async def touch_telegram_user(session: AsyncSession, chat_id: int, username: str | None) -> None:
+    """Учёт пользователей бота: первый и последний визит."""
+    now = _utcnow()
+    stmt = _dialect_insert(session, TelegramUser).values(
+        chat_id=chat_id, username=username, first_seen=now, last_seen=now
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[TelegramUser.chat_id],
+        set_={"username": username, "last_seen": now},
+    )
+    await session.execute(stmt)
+    await session.commit()
 
 
 async def upsert_active_formula_version(session: AsyncSession, version: FormulaVersion) -> None:
@@ -217,11 +323,11 @@ async def upsert_active_formula_version(session: AsyncSession, version: FormulaV
     values = {
         "version": version.version,
         "weights": version.final_score_weights,
-        "thresholds": (
-            {**version.factor_params, "data_quality": version.data_quality}
-            if version.data_quality is not None
-            else version.factor_params
-        ),
+        "thresholds": {
+            **version.factor_params,
+            "data_quality": version.data_quality,
+            "risk_filter": version.risk_filter,
+        },
         "is_active": True,
     }
     dialect = session.bind.dialect.name

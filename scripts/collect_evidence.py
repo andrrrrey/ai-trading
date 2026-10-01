@@ -136,12 +136,20 @@ STAGES: dict[str, dict] = {
     },
     "1.7": {
         "title": "База данных и история",
-        "tests": ["tests/test_db.py", "tests/test_migrations.py"],
+        "tests": [
+            "tests/test_db.py",
+            "tests/test_migrations.py",
+            "tests/test_e2e_stage1.py::test_profile_tables_are_filled",
+            "tests/test_e2e_stage1.py::test_replay_uses_stored_risk_thresholds",
+        ],
         "checks": [
+            "профильные таблицы: tickers, price_history, fundamentals_snapshot, "
+            "market_context (со ссылкой на signal_id), telegram_users",
             "1–7: тикер, время, исходные данные (raw_inputs), метрики, 7 факторов, "
             "Final Score, флаги, источники и версия формул",
             "8: два расчёта = две записи (append-only)",
-            "9: восстановление цепочки — scripts/replay_signal.py",
+            "9: восстановление цепочки — scripts/replay_signal.py (параметры и пороги "
+            "Risk Filter берутся из сохранённой версии формул)",
         ],
         "screens": ["/history по тикеру после двух расчётов", "вывод replay_signal.py"],
         "live": ["replay"],
@@ -155,6 +163,7 @@ STAGES: dict[str, dict] = {
             "при восстановлении, последний сбой — last_failure_at / last_failure_error",
             "6, 8: принудительный сбой и восстановление без ручной правки истории",
             "7: mode (primary/reserve/degraded/unavailable) и data_mode последнего расчёта",
+            "устаревшая (> 30 мин) успешная проверка не выдаётся за ok: state=unknown, stale",
         ],
         "screens": [
             "/health в норме",
