@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
@@ -25,6 +26,9 @@ from app.scoring.thresholds import (
     ScoringConfig,
     load_scoring_config,
 )
+
+if TYPE_CHECKING:  # catalysts → scoring.thresholds → scoring/__init__: без цикла
+    from app.features.catalysts import CatalystAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -250,18 +254,32 @@ def _valuation(fund: Fundamentals, cfg) -> FactorScore:
     )
 
 
-def _catalysts(sentiment: float | None, cfg) -> FactorScore:
-    score = (
-        _clamp(50.0 + sentiment * cfg.sentiment_multiplier)
-        if sentiment is not None
-        else None
-    )
+def _catalysts(
+    signal: float | None,
+    cfg,
+    *,
+    news_sentiment: float | None = None,
+    sec_event_score: float | None = None,
+) -> FactorScore:
+    score = _clamp(50.0 + signal * cfg.sentiment_multiplier) if signal is not None else None
     rule = (
-        f"clamp(50 + sentiment·{cfg.sentiment_multiplier}), sentiment ∈ [-1, 1]"
-        if sentiment is not None
-        else "нет новостного сентимента — подключается на подэтапе 2.1"
+        f"clamp(50 + signal·{cfg.sentiment_multiplier}); signal = "
+        f"({cfg.news_weight}·news ({_fmt(news_sentiment)}) + "
+        f"{cfg.sec_weight}·SEC ({_fmt(sec_event_score)})) / Σ весов доступных; "
+        "нет событий при доступных источниках → signal 0"
+        if signal is not None
+        else "нет данных ни из новостей, ни из SEC EDGAR — фактор не рассчитан"
     )
-    return _make("catalysts", score, {"news_sentiment": sentiment}, rule)
+    return _make(
+        "catalysts",
+        score,
+        {
+            "news_sentiment": news_sentiment,
+            "sec_event_score": sec_event_score,
+            "catalyst_signal": signal,
+        },
+        rule,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -293,13 +311,25 @@ def compute_factor_scores(
     config: ScoringConfig | None = None,
     *,
     news_sentiment: float | None = None,
+    catalysts: CatalystAnalysis | None = None,
 ) -> FactorScores:
     """Считает все 7 факторных Score по FeatureSet и Fundamentals.
 
-    ``news_sentiment`` (∈ [-1, 1]) подаётся на подэтапе 2.1; в Этапе 1 фактор
-    Catalysts остаётся неполным.
+    Catalysts считается по ``catalysts.signal`` (новости + события SEC). Если
+    передан только ``news_sentiment`` (старые записи истории), он и есть сигнал.
     """
     cfg: FactorScoresConfig = (config or load_scoring_config()).factor_scores
+    if catalysts is not None:
+        catalyst_factor = _catalysts(
+            catalysts.signal,
+            cfg.catalysts,
+            news_sentiment=catalysts.sentiment,
+            sec_event_score=catalysts.sec_event_score,
+        )
+    else:
+        catalyst_factor = _catalysts(
+            news_sentiment, cfg.catalysts, news_sentiment=news_sentiment
+        )
     return FactorScores(
         ticker=features.ticker,
         momentum=_momentum(features, cfg.momentum),
@@ -308,5 +338,5 @@ def compute_factor_scores(
         relative_strength=_relative_strength(features, cfg.relative_strength),
         volume=_volume(features, cfg.volume),
         valuation=_valuation(fundamentals, cfg.valuation),
-        catalysts=_catalysts(news_sentiment, cfg.catalysts),
+        catalysts=catalyst_factor,
     )

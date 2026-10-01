@@ -23,8 +23,9 @@ from app.pipeline import Pipeline
 
 async def run(ticker: str) -> None:
     settings = get_settings()
-    if not settings.fmp_api_key:
-        raise SystemExit("FMP_API_KEY не задан")
+    problems = settings.missing_required("smoke")
+    if problems:
+        raise SystemExit("Конфигурация неполная:\n- " + "\n- ".join(problems))
 
     monitor = SourceHealthMonitor()
     router = build_source_router(settings, health_recorder=monitor)

@@ -81,3 +81,8 @@ class FinnhubClient(BaseSourceClient):
         """Новостной сентимент по тикеру (доступность — открытый вопрос Stage 0)."""
         data = await self._get_json("/news-sentiment", params={"symbol": ticker})
         return data if isinstance(data, dict) else {}
+
+    async def get_quote_price(self, ticker: str) -> float | None:
+        """Текущая цена (/quote) — лёгкий запрос для фоновой проверки доступности."""
+        data = await self._get_json("/quote", params={"symbol": ticker})
+        return float(data["c"]) if isinstance(data, dict) and data.get("c") else None

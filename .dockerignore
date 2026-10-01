@@ -1,0 +1,28 @@
+# Секреты и локальное окружение — не попадают в образ
+.env
+*.env
+!.env.example
+
+# VCS, кэши, тесты и локальные артефакты
+.git
+.github
+.gitignore
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+.venv
+venv
+env
+tests
+docs
+backups
+*.db
+*.sqlite3
+*.log
+.idea
+.vscode
+.DS_Store

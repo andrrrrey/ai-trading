@@ -2,11 +2,15 @@
 
 /health отдаёт статус приложения и по каждому источнику данных: статус, время
 последнего успешного обращения, задержку, счётчик подряд идущих ошибок и текст
-последней ошибки (мониторинг источников, подэтап 1.8).
+последней ошибки (мониторинг источников, подэтап 1.8). Фоновый probe
+(app.monitoring.probe) раз в HEALTH_PROBE_INTERVAL_SECONDS проверяет все
+подключённые источники, включая резервные.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -15,22 +19,41 @@ from fastapi import FastAPI
 from app import __version__
 from app.config import get_settings
 from app.db.session import create_engine, create_session_factory
+from app.ingestion import build_source_router
 from app.monitoring import SourceHealthMonitor, get_monitor
-from app.monitoring.source_health import SOURCE_ROLES, latest_data_mode
+from app.monitoring.probe import run_probe_loop
+from app.monitoring.source_health import SOURCE_ROLES, latest_data_mode, overall_mode
 
 logging.basicConfig(level=get_settings().log_level)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings = get_settings()
+    settings.require("api")
     engine = create_engine()
     app.state.db_engine = engine
     session_factory = create_session_factory(engine)
     app.state.session_factory = session_factory
-    app.state.source_monitor = SourceHealthMonitor(session_factory)
+    monitor = SourceHealthMonitor(session_factory)
+    app.state.source_monitor = monitor
+    # Фоновая проверка источников: /health актуален и без запросов пользователей.
+    probe_router = None
+    probe_task = None
+    if settings.health_probe_interval_seconds > 0:
+        probe_router = build_source_router(settings, health_recorder=monitor)
+        probe_task = asyncio.create_task(
+            run_probe_loop(probe_router, monitor, settings.health_probe_interval_seconds)
+        )
     try:
         yield
     finally:
+        if probe_task is not None:
+            probe_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await probe_task
+        if probe_router is not None:
+            await probe_router.aclose()
         await engine.dispose()
 
 
@@ -54,9 +77,9 @@ async def health() -> dict:
     except Exception:  # БД не должна превращать liveness в HTTP 500
         logging.exception("не удалось прочитать состояние источников из БД")
         sources = get_monitor().snapshot()
-    sources_ok = bool(sources) and all(item["status"] == "ok" for item in sources.values())
     for name, item in sources.items():
         item["role"] = SOURCE_ROLES.get(name, "additional")
+    sources_ok = bool(sources) and all(item.get("state") == "ok" for item in sources.values())
 
     data_mode = None
     session_factory = getattr(app.state, "session_factory", None)
@@ -69,6 +92,9 @@ async def health() -> dict:
         "status": "ok",  # liveness приложения
         "version": __version__,
         "sources_ok": sources_ok,
+        # Текущий режим по состоянию источников цен: primary | reserve |
+        # degraded | unavailable | unknown (обновляется фоновым probe).
+        "mode": overall_mode(sources),
         "sources": sources,
         # primary — последний расчёт выполнен на основных источниках,
         # reserve — хотя бы часть данных пришла из резервного (Alpaca/Finnhub).

@@ -19,6 +19,7 @@ from app.ingestion.base_client import (
 from app.ingestion.finnhub_client import FinnhubClient
 from app.ingestion.fmp_client import FMPClient
 from app.ingestion.schemas import (
+    CompanyProfile,
     Earnings,
     Filing,
     Fundamentals,
@@ -36,6 +37,8 @@ T = TypeVar("T")
 # Основной источник по каждому виду данных: всё остальное — резервный режим.
 PRIMARY_SOURCES: dict[str, str] = {
     "price_history": "fmp",
+    "quote": "fmp",
+    "profile": "fmp",
     "fundamentals": "fmp",
     "earnings": "fmp",
     "news": "fmp",
@@ -73,6 +76,16 @@ class SourceRouter:
         self._alpaca = alpaca
         self._finnhub = finnhub
         self._sec = sec_edgar
+
+    def configured_clients(self) -> dict[str, object]:
+        """Подключённые клиенты источников (для фоновой проверки доступности)."""
+        clients = {
+            "fmp": self._fmp,
+            "alpaca": self._alpaca,
+            "finnhub": self._finnhub,
+            "sec_edgar": self._sec,
+        }
+        return {name: client for name, client in clients.items() if client is not None}
 
     async def aclose(self) -> None:
         for client in (self._fmp, self._alpaca, self._finnhub, self._sec):
@@ -154,7 +167,20 @@ class SourceRouter:
         )
 
     async def get_quote(self, ticker: str) -> Quote:
-        return await self._fmp.get_quote(ticker)
+        """Текущая котировка: FMP → Alpaca (последняя сделка)."""
+        fallback = None
+        if self._alpaca is not None:
+            fallback = lambda: self._alpaca.get_latest_quote(ticker)  # noqa: E731
+        return await self._with_fallback(
+            what=f"quote[{ticker}]",
+            primary=lambda: self._fmp.get_quote(ticker),
+            primary_name="fmp",
+            fallback=fallback,
+            fallback_name="alpaca" if fallback else None,
+        )
+
+    async def get_profile(self, ticker: str) -> CompanyProfile:
+        return await self._fmp.get_profile(ticker)
 
     async def get_fundamentals(self, ticker: str, period: str = "annual") -> Fundamentals:
         return await self._fmp.get_fundamentals(ticker, period=period)

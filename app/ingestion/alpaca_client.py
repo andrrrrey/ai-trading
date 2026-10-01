@@ -16,7 +16,7 @@ from app.ingestion.base_client import (
     HealthRecorder,
     SourceError,
 )
-from app.ingestion.schemas import RawPriceBar, RawPriceHistory
+from app.ingestion.schemas import Quote, RawPriceBar, RawPriceHistory
 
 _NEW_YORK = ZoneInfo("America/New_York")
 
@@ -125,4 +125,29 @@ class AlpacaClient(BaseSourceClient):
             )
         return RawPriceHistory(
             ticker=ticker, bars=bars, source=self.source, fetched_at=fetched
+        )
+
+    async def get_latest_quote(self, ticker: str) -> Quote:
+        """Цена последней сделки (резерв текущей котировки, ТЗ 4: Alpaca — quotes)."""
+        data = await self._get_json(f"/v2/stocks/{ticker}/trades/latest")
+        trade = data.get("trade") if isinstance(data, dict) else None
+        price = _to_float(trade.get("p")) if isinstance(trade, dict) else None
+        if price is None:
+            raise SourceError(
+                f"alpaca: нет последней сделки для {ticker}",
+                source=self.source,
+                kind=ERROR_NO_DATA,
+            )
+        moment = None
+        if trade.get("t"):
+            try:
+                moment = datetime.fromisoformat(str(trade["t"]).replace("Z", "+00:00"))
+            except ValueError:
+                moment = None
+        return Quote(
+            ticker=ticker,
+            price=price,
+            quote_time=moment,
+            source=self.source,
+            fetched_at=_now(),
         )

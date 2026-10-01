@@ -3,16 +3,26 @@
 Базовый интерфейс Этапа 1: метрики, 7 Factor Scores, Final Score, Risk Flags с
 причинами, история. Полный шаблон КП со статусом BUY/SELL и AI-объяснением —
 подэтап 2.4. Каждое сообщение заканчивается дисклеймером (ТЗ раздел 0, 12).
+
+Бот отправляет сообщения в режиме parse_mode=HTML, поэтому любой текст не из
+шаблона (заголовки новостей, названия источников, причины флагов с «<», профиль
+компании) проходит через ``_e`` (html.escape).
 """
 
 from __future__ import annotations
 
+import html
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from app.db.models import Signal
-from app.features.indicators import FeatureSet
-from app.ingestion.schemas import Fundamentals
-from app.scoring import ScoringConfig, compute_factor_scores, load_scoring_config
+from app.db.repository import factor_scores_from_snapshot, stored_scoring_config
+from app.scoring import ScoringConfig
+
+_NEW_YORK = ZoneInfo("America/New_York")
+# Котировка старше этого срока (выходные + праздник) помечается как устаревшая.
+QUOTE_STALE_AFTER = timedelta(days=4)
 
 DISCLAIMER = "⚠️ Не является индивидуальной инвестиционной рекомендацией."
 
@@ -37,6 +47,11 @@ _FLAG_TITLES = {
 }
 
 
+def _e(value: object) -> str:
+    """Экранирование внешнего текста для Telegram HTML."""
+    return html.escape(str(value), quote=False)
+
+
 def _fmt(value: float | int | None, digits: int = 0) -> str:
     if value is None:
         return "н/д"
@@ -57,7 +72,7 @@ def _source_line(signal: Signal) -> str:
             names.add(str(value["source"]))
         elif isinstance(value, list):
             names.update(str(item) for item in value if item)
-    return ", ".join(sorted(names)) or "н/д"
+    return _e(", ".join(sorted(names)) or "н/д")
 
 
 def _mode_line(signal: Signal) -> str | None:
@@ -68,65 +83,151 @@ def _mode_line(signal: Signal) -> str | None:
     if mode == "primary":
         return "Режим данных: основной источник"
     reserve = []
-    for kind, title in (("price_history", "цены"), ("benchmark", "бенчмарк")):
+    for kind, title in (
+        ("price_history", "цены"),
+        ("benchmark", "бенчмарк"),
+        ("quote", "котировка"),
+    ):
         entry = sources.get(kind) or {}
         if entry.get("mode") == "reserve":
             reserve.append(f"{title} — {entry.get('source')}")
     if sources.get("news_mode") == "reserve":
         reserve.append("новости — " + ", ".join(sources.get("news") or []))
-    return "⚠️ Режим данных: РЕЗЕРВНЫЙ (" + "; ".join(reserve) + ")"
+    return "⚠️ Режим данных: РЕЗЕРВНЫЙ (" + _e("; ".join(reserve)) + ")"
+
+
+def _raw_inputs(signal: Signal) -> dict:
+    return (signal.raw_input_snapshot or {}).get("raw_inputs") or {}
+
+
+def _price_lines(signal: Signal) -> list[str]:
+    """Текущая котировка и последняя дневная свеча — раздельно, с датами."""
+    raw = _raw_inputs(signal)
+    quote = raw.get("quote")
+    bars = ((raw.get("price_history") or {}).get("bars")) or []
+    eod = f"${bars[-1][4]:.2f} ({bars[-1][0]})" if bars else None
+    lines: list[str] = []
+    if quote and quote.get("price") is not None:
+        when = ""
+        if quote.get("quote_time"):
+            moment = datetime.fromisoformat(quote["quote_time"])
+            when = f", {moment.astimezone(_NEW_YORK):%Y-%m-%d %H:%M} ET"
+            calc_time = signal.timestamp
+            if calc_time.tzinfo is None:
+                calc_time = calc_time.replace(tzinfo=UTC)
+            if calc_time - moment > QUOTE_STALE_AFTER:
+                when += " ⚠️ котировка устарела"
+        lines.append(f"Цена: ${quote['price']:.2f} (котировка {_e(quote.get('source'))}{when})")
+        if eod:
+            lines.append(f"Закрытие EOD: {eod} — по нему считаются индикаторы")
+    elif eod:
+        lines.append(f"Цена: {eod} — закрытие EOD, текущая котировка недоступна")
+    elif signal.price is not None:
+        lines.append(f"Цена: ${signal.price:.2f}")
+    return lines
+
+
+def _profile_line(signal: Signal) -> str | None:
+    profile = _raw_inputs(signal).get("profile")
+    if not profile:
+        return None
+    parts = [
+        profile.get("company_name"),
+        profile.get("exchange"),
+        profile.get("sector"),
+    ]
+    text = " · ".join(str(p) for p in parts if p)
+    return f"🏢 {_e(text)}" if text else None
+
+
+def _is_incomplete(signal: Signal) -> bool:
+    flags = signal.risk_flags or []
+    return signal.final_score is None or any(f["flag"] == "missing_data" for f in flags)
 
 
 def render_main(signal: Signal) -> str:
     flags = signal.risk_flags or []
-    score = f"{signal.final_score}/100" if signal.final_score is not None else "неполный расчёт"
+    if signal.final_score is None:
+        score = "<b>не рассчитан</b> (неполные данные)"
+    elif _is_incomplete(signal):
+        score = f"<b>{signal.final_score}/100</b> (предварительный: неполные данные)"
+    else:
+        score = f"<b>{signal.final_score}/100</b>"
     timestamp = signal.timestamp.strftime("%Y-%m-%d %H:%M UTC")
-    lines = [f"📊 <b>{signal.ticker}</b> — Final Score: <b>{score}</b>"]
-    lines.append(f"Расчёт: {timestamp} · формула {signal.formula_version}")
+    lines = [f"📊 <b>{_e(signal.ticker)}</b> — Final Score: {score}"]
+    profile_line = _profile_line(signal)
+    if profile_line:
+        lines.append(profile_line)
+    lines.append(f"Расчёт: {timestamp} · формула {_e(signal.formula_version)}")
     lines.append(f"Источники: {_source_line(signal)}")
     mode_line = _mode_line(signal)
     if mode_line:
         lines.append(mode_line)
-    if signal.price is not None:
-        lines.append(f"Цена: ${signal.price:.2f}")
+    lines += _price_lines(signal)
     lines += ["", _factor_line(signal), ""]
     if flags:
-        lines.append("⚠️ Risk: " + ", ".join(_FLAG_TITLES.get(f["flag"], f["flag"]) for f in flags))
+        lines.append(
+            "⚠️ Risk: " + _e(", ".join(_FLAG_TITLES.get(f["flag"], f["flag"]) for f in flags))
+        )
     else:
         lines.append("✅ Risk: без флагов")
-    if signal.final_score is None or any(f["flag"] == "missing_data" for f in flags):
+    if _is_incomplete(signal):
         lines.append("❗ Расчёт неполный: часть данных недоступна (см. кнопку «Risk»).")
+    for warning in _raw_inputs(signal).get("warnings") or []:
+        lines.append(f"ℹ️ {_e(warning)}")
     lines += ["", DISCLAIMER]
     return "\n".join(lines)
 
 
+_EVIDENCE_KIND = {
+    "sec_event": "SEC-событие",
+    "sec_report": "SEC-отчётность",
+    "news": "новость",
+    "filing": "SEC",
+}
+
+
 def render_details(signal: Signal, config: ScoringConfig | None = None) -> str:
     """Расшифровка 7 факторов: входные метрики → правило → оценка (из снимка)."""
-    cfg = config or load_scoring_config()
+    cfg = config or stored_scoring_config(signal)
     snap = signal.raw_input_snapshot
-    features = FeatureSet.model_validate(snap["features"])
-    fundamentals = Fundamentals.model_validate(snap["fundamentals"])
-    scores = compute_factor_scores(
-        features, fundamentals, cfg, news_sentiment=snap.get("news_sentiment")
-    )
-    lines = [f"🔍 <b>{signal.ticker}</b> — расшифровка факторов:"]
+    scores = factor_scores_from_snapshot(snap, cfg)
+    weights = cfg.final_score_weights.as_dict()
+    lines = [f"🔍 <b>{_e(signal.ticker)}</b> — расшифровка факторов (формула {_e(cfg.version)}):"]
     for name, title in _FACTOR_TITLES.items():
         factor = getattr(scores, name)
-        lines.append(f"\n<b>{title}: {_fmt(factor.score)}</b>")
-        lines.append(factor.rule)
+        lines.append(f"\n<b>{title}: {_fmt(factor.score)}</b> · вес {weights[name]:.0%}")
+        lines.append(_e(factor.rule))
         if name == "catalysts":
-            catalyst_context = snap.get("catalysts") or {}
+            ctx = snap.get("catalysts") or {}
+            availability = []
+            if ctx.get("news_available") is False:
+                availability.append("новости недоступны")
+            if ctx.get("filings_available") is False:
+                availability.append("SEC EDGAR недоступен")
             lines.append(
                 "Источники: "
-                + ", ".join(catalyst_context.get("sources") or [])
-                + f"; новостей: {catalyst_context.get('news_count', 0)}"
-                + f"; SEC filings: {catalyst_context.get('filing_count', 0)}"
+                + _e(", ".join(ctx.get("sources") or []) or "н/д")
+                + f"; новостей: {ctx.get('news_count', 0)}"
+                + f"; SEC-событий за окно: {ctx.get('sec_event_count', 0)}"
+                + f"; свежих 10-K/10-Q: {ctx.get('recent_report_count', 0)}"
+                + (f" ({_e(', '.join(availability))})" if availability else "")
             )
-            for evidence in (catalyst_context.get("evidence") or [])[:5]:
+            for evidence in (ctx.get("evidence") or [])[:6]:
                 when = evidence.get("date") or "дата н/д"
+                kind = _EVIDENCE_KIND.get(evidence.get("kind"), evidence.get("kind"))
+                score = evidence.get("score")
+                mark = "" if score is None else f" [{score:+.0f}"
+                if mark and evidence.get("weight") is not None:
+                    mark += f", вес {evidence['weight']:.2f}"
+                mark += "]" if mark else ""
                 lines.append(
-                    f"• {when} · {evidence.get('source', 'н/д')} · {evidence.get('title', 'н/д')}"
+                    f"• {_e(when[:10])} · {_e(kind)} · {_e(evidence.get('source', 'н/д'))} · "
+                    f"{_e(evidence.get('title', 'н/д'))}{mark}"
                 )
+    final_rule = (snap.get("calculation") or {}).get("final_rule")
+    if final_rule:
+        lines += ["", f"<b>Final Score</b> = {_e(final_rule)}"]
     lines += ["", DISCLAIMER]
     return "\n".join(lines)
 
@@ -135,9 +236,9 @@ def render_metrics(signal: Signal) -> str:
     snap = signal.raw_input_snapshot
     f = snap["features"]
     fund = snap["fundamentals"]
-    lines = [f"📈 <b>{signal.ticker}</b> — исходные метрики:", "", "<b>Технические:</b>"]
+    lines = [f"📈 <b>{_e(signal.ticker)}</b> — исходные метрики:", "", "<b>Технические:</b>"]
     tech = [
-        ("Цена", f.get("price"), 2),
+        ("Закрытие EOD", f.get("price"), 2),
         ("EMA20", f.get("ema20"), 2),
         ("EMA50", f.get("ema50"), 2),
         ("EMA200", f.get("ema200"), 2),
@@ -170,13 +271,13 @@ def render_metrics(signal: Signal) -> str:
 
 def render_risk(signal: Signal) -> str:
     flags = signal.risk_flags or []
-    lines = [f"🛡 <b>{signal.ticker}</b> — Risk Filter:"]
+    lines = [f"🛡 <b>{_e(signal.ticker)}</b> — Risk Filter:"]
     if not flags:
         lines.append("✅ Активных флагов риска нет.")
     else:
         for flag in flags:
             title = _FLAG_TITLES.get(flag["flag"], flag["flag"])
-            lines.append(f"• <b>{title}</b>: {flag['reason']}")
+            lines.append(f"• <b>{_e(title)}</b>: {_e(flag['reason'])}")
     lines += ["", DISCLAIMER]
     return "\n".join(lines)
 
@@ -184,8 +285,8 @@ def render_risk(signal: Signal) -> str:
 def render_history(ticker: str, signals: Iterable[Signal]) -> str:
     signals = list(signals)
     if not signals:
-        return f"История по {ticker.upper()} пуста."
-    lines = [f"🕓 <b>{ticker.upper()}</b> — последние сигналы:"]
+        return f"История по {_e(ticker.upper())} пуста."
+    lines = [f"🕓 <b>{_e(ticker.upper())}</b> — последние сигналы:"]
     for s in signals:
         when = s.timestamp.strftime("%Y-%m-%d %H:%M")
         price = f"${s.price:.2f}" if s.price is not None else "н/д"
@@ -201,7 +302,7 @@ def _risk_summary(signal: Signal) -> str:
     flags = signal.risk_flags or []
     if not flags:
         return "Risk: без флагов"
-    return "Risk: " + ", ".join(_FLAG_TITLES.get(f["flag"], f["flag"]) for f in flags)
+    return "Risk: " + _e(", ".join(_FLAG_TITLES.get(f["flag"], f["flag"]) for f in flags))
 
 
 def _pct(fraction: float | None) -> float | None:

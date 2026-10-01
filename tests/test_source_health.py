@@ -138,3 +138,49 @@ def test_health_endpoint_reflects_failure_and_recovery():
     assert body["sources_ok"] is True
 
     get_monitor.cache_clear()
+
+
+def _app_env(monkeypatch, tmp_path, **extra):
+    from app.config import get_settings
+
+    env = {
+        "FMP_API_KEY": "k",
+        "SEC_USER_AGENT": "switch-trading-mvp ops@company.ru",
+        "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'h.db'}",
+        "HEALTH_PROBE_INTERVAL_SECONDS": "0",
+    }
+    env.update(extra)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+
+
+def test_api_refuses_to_start_without_required_config(monkeypatch, tmp_path):
+    import pytest
+
+    from app.config import ConfigError, get_settings
+
+    _app_env(monkeypatch, tmp_path, FMP_API_KEY="")
+    with pytest.raises(ConfigError, match="FMP_API_KEY"):
+        with TestClient(app):
+            pass
+    get_settings.cache_clear()
+
+
+def test_health_reports_mode_with_lifespan(monkeypatch, tmp_path):
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.config import get_settings
+    from app.db.session import create_all
+
+    _app_env(monkeypatch, tmp_path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'h.db'}")
+    asyncio.run(create_all(engine))
+    asyncio.run(engine.dispose())
+
+    with TestClient(app) as client:
+        body = client.get("/health").json()
+    assert body["mode"] == "unknown"  # проверок ещё не было
+    assert body["sources"]["fmp"]["state"] == "unknown"
+    assert body["data_mode"] is None
+    get_settings.cache_clear()

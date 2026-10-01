@@ -7,7 +7,12 @@ Score → Risk Filter (ТЗ разделы 2, 7–9).
 (чек-лист 1.7.9, 1.10.4).
 
 ``raw_inputs`` — снимок исходных данных, на которых выполнен расчёт: OHLCV тикера
-и бенчмарка, fundamentals, дата отчётности, новости, SEC filings и дата расчёта.
+и бенчмарка, fundamentals, дата отчётности, новости, SEC filings, доступность
+источников, причины неполноты данных, текущая котировка, профиль и дата расчёта.
+
+Неполнота входных данных (``data_issues``: короткая история, нет fundamentals,
+недоступны SEC/новости/дата отчётности) всегда превращается в флаг missing_data
+с перечнем причин — расчёт не выдаётся за полный.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 from app.features.catalysts import CatalystAnalysis, analyze_catalysts
 from app.features.indicators import FeatureSet, compute_features
 from app.ingestion.normalization import PriceBar, PriceHistory
-from app.ingestion.schemas import Filing, Fundamentals, NewsItem
+from app.ingestion.schemas import CompanyProfile, Filing, Fundamentals, NewsItem, Quote
 from app.risk import RiskAssessment, compute_risk
 from app.scoring import (
     FactorScores,
@@ -53,15 +58,29 @@ def calculate(
     filings: list[Filing],
     calc_date: date,
     config: ScoringConfig,
+    news_available: bool = True,
+    filings_available: bool = True,
+    data_issues: list[str] | None = None,
 ) -> CalculationResult:
     features = compute_features(price_history, benchmark)
-    catalysts = analyze_catalysts(news, filings)
-    factor_scores = compute_factor_scores(
-        features, fundamentals, config, news_sentiment=catalysts.sentiment
+    catalysts = analyze_catalysts(
+        news,
+        filings,
+        news_available=news_available,
+        filings_available=filings_available,
+        calc_date=calc_date,
+        config=config.factor_scores.catalysts,
     )
+    factor_scores = compute_factor_scores(features, fundamentals, config, catalysts=catalysts)
     final = compute_final_score(factor_scores, config)
-    missing = [name for name, value in final.factor_scores.items() if value is None]
-    if not earnings_available:
+    missing = [
+        f"фактор {name} не рассчитан"
+        for name, value in final.factor_scores.items()
+        if value is None
+    ]
+    if data_issues is not None:
+        missing.extend(data_issues)
+    elif not earnings_available:  # записи, сохранённые до появления data_issues
         missing.append("earnings")
     risk = compute_risk(
         features,
@@ -130,10 +149,22 @@ def build_raw_inputs(
     news: list[NewsItem],
     filings: list[Filing],
     calc_date: date,
+    news_available: bool = True,
+    filings_available: bool = True,
+    data_issues: list[str] | None = None,
+    quote: Quote | None = None,
+    profile: CompanyProfile | None = None,
+    warnings: list[str] | None = None,
     quality: dict | None = None,
 ) -> dict:
     """JSON-снимок всех исходных данных расчёта (сохраняется в историю)."""
     return {
+        "news_available": news_available,
+        "filings_available": filings_available,
+        "data_issues": list(data_issues or []),
+        "warnings": list(warnings or []),
+        "quote": quote.model_dump(mode="json") if quote else None,
+        "profile": profile.model_dump(mode="json") if profile else None,
         "calc_date": calc_date.isoformat(),
         "price_history": _history_to_raw(price_history),
         "benchmark": _history_to_raw(benchmark),
@@ -165,4 +196,7 @@ def replay_from_raw_inputs(raw: dict, config: ScoringConfig) -> CalculationResul
         filings=[Filing.model_validate(item) for item in raw.get("filings") or []],
         calc_date=date.fromisoformat(raw["calc_date"]),
         config=config,
+        news_available=raw.get("news_available", True),
+        filings_available=raw.get("filings_available", True),
+        data_issues=raw.get("data_issues"),
     )

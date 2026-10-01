@@ -25,8 +25,25 @@ class SourcedModel(BaseModel):
 
 
 class Quote(SourcedModel):
+    """Текущая котировка: цена и момент, к которому она относится (биржевое время)."""
+
     ticker: str
     price: float | None = None
+    quote_time: datetime | None = None
+
+
+class CompanyProfile(SourcedModel):
+    """Корпоративные данные эмитента (FMP /stable/profile)."""
+
+    ticker: str
+    company_name: str | None = None
+    exchange: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    country: str | None = None
+    currency: str | None = None
+    market_cap: float | None = None
+    is_actively_trading: bool | None = None
 
 
 class RawPriceBar(SourcedModel):
@@ -77,3 +94,5 @@ class Filing(SourcedModel):
     form: str
     filed_date: date | None = None
     accession_number: str | None = None
+    # Пункты 8-K (например "2.02,9.01") — тип события по классификации SEC.
+    items: str | None = None

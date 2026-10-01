@@ -49,6 +49,18 @@ class ValuationConfig(BaseModel):
 
 class CatalystsConfig(BaseModel):
     sentiment_multiplier: float = 50.0
+    # Вклад источников в сигнал катализаторов: SEC (официальный) приоритетнее СМИ.
+    news_weight: float = 1.0
+    sec_weight: float = 2.0
+    # Окно актуальности события 8-K / NT: вес линейно убывает от 1 до 0.
+    sec_event_lookback_days: int = 30
+    # 10-K/10-Q считается свежей подтверждённой отчётностью в этом окне.
+    sec_report_lookback_days: int = 100
+    positive_8k_items: list[str] = ["1.01", "2.01"]
+    negative_8k_items: list[str] = [
+        "1.02", "1.03", "2.04", "2.05", "2.06", "3.01", "4.01", "4.02"
+    ]
+    negative_forms: list[str] = ["NT 10-K", "NT 10-Q"]
 
 
 class FactorScoresConfig(BaseModel):
@@ -84,7 +96,7 @@ class FinalScoreWeights(BaseModel):
 class ScoringConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    version: str = "v1.0"
+    version: str = "v1.1"
     final_score_weights: FinalScoreWeights = FinalScoreWeights()
     factor_scores: FactorScoresConfig = FactorScoresConfig()
 

@@ -17,6 +17,7 @@ from app.ingestion.base_client import (
     SourceError,
 )
 from app.ingestion.schemas import (
+    CompanyProfile,
     Earnings,
     Fundamentals,
     NewsItem,
@@ -72,9 +73,15 @@ class FMPClient(BaseSourceClient):
     async def get_quote(self, ticker: str) -> Quote:
         data = await self._get_json("/stable/quote", params={"symbol": ticker})
         row = _first_row(data, source=self.source, ticker=ticker, what="quote")
+        price = _to_float(row.get("price"))
+        if price is None:
+            raise SourceError(
+                f"fmp: в котировке {ticker} нет цены", source=self.source, kind=ERROR_NO_DATA
+            )
         return Quote(
             ticker=ticker,
-            price=_to_float(row.get("price")),
+            price=price,
+            quote_time=_from_unix(row.get("timestamp")),
             source=self.source,
             fetched_at=_now(),
         )
@@ -105,9 +112,23 @@ class FMPClient(BaseSourceClient):
             )
         return RawPriceHistory(ticker=ticker, bars=bars, source=self.source, fetched_at=fetched)
 
-    async def get_profile(self, ticker: str) -> dict[str, Any]:
+    async def get_profile(self, ticker: str) -> CompanyProfile:
         data = await self._get_json("/stable/profile", params={"symbol": ticker})
-        return _first_row(data, source=self.source, ticker=ticker, what="profile")
+        row = _first_row(data, source=self.source, ticker=ticker, what="profile")
+        active = row.get("isActivelyTrading")
+        return CompanyProfile(
+            ticker=ticker,
+            company_name=row.get("companyName"),
+            exchange=row.get("exchange") or row.get("exchangeShortName"),
+            sector=row.get("sector") or None,
+            industry=row.get("industry") or None,
+            country=row.get("country") or None,
+            currency=row.get("currency") or None,
+            market_cap=_to_float(row.get("marketCap") or row.get("mktCap")),
+            is_actively_trading=active if isinstance(active, bool) else None,
+            source=self.source,
+            fetched_at=_now(),
+        )
 
     async def get_ratios(self, ticker: str) -> dict[str, Any]:
         data = await self._get_json("/stable/ratios", params={"symbol": ticker})
@@ -195,6 +216,13 @@ class FMPClient(BaseSourceClient):
                 )
             )
         return items
+
+
+def _from_unix(value: Any) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(int(value), tz=UTC) if value else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _as_rows(data: Any) -> list[dict[str, Any]]:

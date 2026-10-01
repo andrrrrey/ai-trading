@@ -223,7 +223,7 @@ async def test_sections_render_from_stored_signal(session_factory):
     metrics = await service.section(signal_id, "metrics")
     risk = await service.section(signal_id, "risk")
     assert "расшифровка" in details.lower()
-    assert "SEC filings: 1" in details
+    assert "SEC-событий за окно" in details
     assert "Company beats estimates" in details
     assert "RSI14" in metrics
     assert "Risk Filter" in risk

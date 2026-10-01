@@ -24,11 +24,13 @@ from app.db.models import (
 from app.db.models import (
     PriceHistory as PriceHistoryRow,
 )
+from app.features.catalysts import CatalystAnalysis
 from app.features.indicators import FeatureSet
 from app.ingestion.normalization import PriceHistory
 from app.ingestion.schemas import Fundamentals
 from app.risk.risk_filter import RiskAssessment
 from app.scoring import (
+    FactorScores,
     FinalScore,
     ScoringConfig,
     active_formula_version,
@@ -151,12 +153,25 @@ def recompute_from_snapshot(signal: Signal, config: ScoringConfig | None = None)
     """
     snap = signal.raw_input_snapshot
     cfg = config or stored_scoring_config(signal)
+    return compute_final_score(factor_scores_from_snapshot(snap, cfg), cfg)
+
+
+def factor_scores_from_snapshot(snap: dict, cfg: ScoringConfig) -> FactorScores:
+    """7 факторов по сохранённым метрикам, fundamentals и Catalyst-контексту."""
     features = FeatureSet.model_validate(snap["features"])
     fundamentals = Fundamentals.model_validate(snap["fundamentals"])
-    factor_scores = compute_factor_scores(
+    catalyst_context = snap.get("catalysts") or {}
+    if "signal" in catalyst_context:
+        return compute_factor_scores(
+            features,
+            fundamentals,
+            cfg,
+            catalysts=CatalystAnalysis.model_validate(catalyst_context),
+        )
+    # записи до версии v1.1: Catalysts считался только по тональности новостей
+    return compute_factor_scores(
         features, fundamentals, cfg, news_sentiment=snap.get("news_sentiment")
     )
-    return compute_final_score(factor_scores, cfg)
 
 
 async def upsert_price_history(session: AsyncSession, history: PriceHistory) -> int:
