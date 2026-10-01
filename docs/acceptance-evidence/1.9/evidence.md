@@ -1,7 +1,7 @@
 # Подэтап 1.9 — Базовый Telegram интерфейс
 
-- Сформировано: 2026-10-01 04:29 UTC (`scripts/collect_evidence.py`)
-- Commit: `2b95e21` · версия формул: `v1.1`
+- Сформировано: 2026-10-01 05:38 UTC (`scripts/collect_evidence.py`)
+- Commit: `a339b9a` · версия формул: `v1.2`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
@@ -15,7 +15,7 @@
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_bot.py
 .......................                                                  [100%]
-23 passed in 8.12s
+23 passed in 8.17s
 [exit code 0]
 ```
 

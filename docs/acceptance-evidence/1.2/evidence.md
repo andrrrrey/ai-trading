@@ -1,20 +1,20 @@
 # Подэтап 1.2 — Получение и качество данных
 
-- Сформировано: 2026-10-01 04:29 UTC (`scripts/collect_evidence.py`)
-- Commit: `2b95e21` · версия формул: `v1.1`
+- Сформировано: 2026-10-01 05:38 UTC (`scripts/collect_evidence.py`)
+- Commit: `a339b9a` · версия формул: `v1.2`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
 - 1–3: нормализация OHLCV (NY-дата, USD), валидация, дедупликация
-- 2, 8: пропуски остаются null, неполнота → data_issues → флаг missing_data
+- 2, 8: пропуски остаются null; полнота оценивается по двум уровням (test_data_quality.py): критично — Score не выдаётся, некритично — достоверность пониженная; причины — во флаге missing_data
 - 4–6: некорректный ответ, timeout, rate limit — классы ошибок и сообщения
 - 7: недоступность источника → резерв или честное сообщение
 
 ## Автотесты подэтапа
 ```
-$ python -m pytest -q -p no:cacheprovider tests/test_normalization.py tests/test_base_client.py tests/test_ingestion_service.py
-........................                                                 [100%]
-24 passed in 5.70s
+$ python -m pytest -q -p no:cacheprovider tests/test_normalization.py tests/test_base_client.py tests/test_ingestion_service.py tests/test_data_quality.py
+..............................                                           [100%]
+30 passed in 6.40s
 [exit code 0]
 ```
 
