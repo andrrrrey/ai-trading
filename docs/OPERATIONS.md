@@ -11,7 +11,7 @@
 | `postgres` | PostgreSQL 15, том `pgdata` | `pg_isready` | unless-stopped |
 | `migrate` | `alembic upgrade head` перед стартом app и бота | — | одноразовый |
 | `app` | FastAPI `/health` и фоновый probe источников; порт `127.0.0.1:8000` | `GET /health` раз в 30 с | unless-stopped |
-| `bot` | Telegram-бот (long polling) | heartbeat-файл: обновляется раз в минуту, если Telegram API отвечает; контейнер unhealthy, если файл старше 3 минут | unless-stopped |
+| `bot` | Telegram-бот (long polling; при старте снимает webhook, если он был установлен для этого токена) | heartbeat-файл: обновляется раз в минуту, если Telegram API отвечает; контейнер unhealthy, если файл старше 3 минут | unless-stopped |
 
 - База наружу не публикуется, API доступен только с самого сервера (или через
   SSH-туннель).

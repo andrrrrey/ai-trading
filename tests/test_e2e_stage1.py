@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pytest_asyncio
@@ -33,6 +33,9 @@ from app.ingestion.sec_edgar_client import SECEdgarClient
 from app.ingestion.source_router import SourceRouter
 from app.monitoring.source_health import SourceHealthMonitor, latest_data_mode
 from app.pipeline import Pipeline
+
+# Новость в окне актуальности относительно даты запуска тестов.
+RECENT_NEWS_TS = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 FMP_HIST = re.compile(r".*/stable/historical-price-eod/full")
 FMP_RATIOS = re.compile(r".*/stable/ratios")
@@ -161,7 +164,7 @@ def _mock_fmp_fundamentals() -> None:
             json=[
                 {
                     "title": "Company beats estimates and raises guidance",
-                    "publishedDate": "2026-09-18T12:00:00Z",
+                    "publishedDate": RECENT_NEWS_TS,
                     "url": "https://example.test/news/1",
                 }
             ],
@@ -395,7 +398,7 @@ async def test_replay_from_stored_raw_inputs(session_factory):
 
 
 # --------------------------------------------------------------------------- #
-# Полнота данных, два уровня (v1.2)
+# Полнота данных, два уровня (v1.2+)
 # --------------------------------------------------------------------------- #
 async def _analyze(session_factory, bars: int = 260) -> tuple[str, Signal]:
     respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist(bars)))
@@ -528,7 +531,7 @@ async def test_external_text_is_html_escaped(session_factory):
     respx.get(FMP_NEWS).mock(
         return_value=httpx.Response(
             200,
-            json=[{"title": "AT&T <beats> estimates", "publishedDate": "2026-09-18T12:00:00Z"}],
+            json=[{"title": "AT&T <beats> estimates", "publishedDate": RECENT_NEWS_TS}],
         )
     )
     service = build_service(session_factory, SourceHealthMonitor())
@@ -537,3 +540,87 @@ async def test_external_text_is_html_escaped(session_factory):
     details = await service.section(sid, "details")
     assert "AT&amp;T &lt;beats&gt; estimates" in details
     assert "<beats>" not in details
+
+
+# --------------------------------------------------------------------------- #
+# Режим данных: недоступные некритичные наборы → degraded, а не primary
+# --------------------------------------------------------------------------- #
+@respx.mock
+async def test_missing_noncritical_sources_mark_mode_degraded(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(FMP_NEWS).mock(return_value=httpx.Response(503))
+    respx.get(FMP_QUOTE).mock(return_value=httpx.Response(503))
+    respx.get(FMP_PROFILE).mock(return_value=httpx.Response(503))
+    respx.get(re.compile(r".*/v2/stocks/AAPL/trades/latest")).mock(
+        return_value=httpx.Response(503)
+    )
+    service = build_service(session_factory, SourceHealthMonitor(session_factory))
+
+    text, sid = await service.analyze("AAPL")
+
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    sources = signal.raw_input_snapshot["sources"]
+    assert sources["price_history"]["mode"] == "primary"
+    assert sources["news"]["mode"] == "unavailable"
+    assert sources["quote"]["mode"] == "unavailable"
+    assert sources["filings"]["mode"] == "primary"  # SEC участвует в режиме явно
+    assert sources["mode"] == "degraded"
+    assert "ЧАСТИЧНЫЙ" in text and "новости" in text and "котировка" in text
+    assert (await latest_data_mode(session_factory))["mode"] == "degraded"
+
+
+@respx.mock
+async def test_sec_down_marks_mode_degraded(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(SEC_SUBMISSIONS).mock(return_value=httpx.Response(503))
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    text, _ = await service.analyze("AAPL")
+
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    assert signal.raw_input_snapshot["sources"]["filings"]["mode"] == "unavailable"
+    assert signal.raw_input_snapshot["sources"]["mode"] == "degraded"
+    assert "SEC EDGAR" in text
+
+
+# --------------------------------------------------------------------------- #
+# Резерв Alpaca: цены согласованы с FMP по сплитам (adjustment=split)
+# --------------------------------------------------------------------------- #
+def _alpaca_split_bars(adjusted: bool) -> dict:
+    """260 дней, сплит 4:1 за 30 дней до конца: raw-цены до сплита в 4 раза выше."""
+    data = _alpaca_bars()
+    split_index = len(data["bars"]) - 30
+    if not adjusted:
+        for bar in data["bars"][:split_index]:
+            for key in ("o", "h", "l", "c"):
+                bar[key] = round(bar[key] * 4, 2)
+    return data
+
+
+@respx.mock
+async def test_alpaca_fallback_uses_split_adjusted_prices(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(503))
+    _mock_fmp_fundamentals()
+
+    def alpaca_bars(request: httpx.Request) -> httpx.Response:
+        adjusted = request.url.params.get("adjustment") == "split"
+        return httpx.Response(200, json=_alpaca_split_bars(adjusted))
+
+    route = respx.get(ALPACA_BARS).mock(side_effect=alpaca_bars)
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    _, sid = await service.analyze("AAPL")
+
+    assert route.calls[0].request.url.params["adjustment"] == "split"
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    features = signal.raw_input_snapshot["features"]
+    # без скачка ×4: цена у EMA200, ATR нормальный, флагов волатильности/гэпа нет
+    assert abs(features["distance_to_ema50"]) < 15
+    assert features["atr_pct"] < 0.05
+    flags = [f["flag"] for f in signal.risk_flags]
+    assert "high_volatility" not in flags and "gap_risk" not in flags

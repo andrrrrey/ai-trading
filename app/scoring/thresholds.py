@@ -51,6 +51,8 @@ class CatalystsConfig(BaseModel):
     sentiment_multiplier: float = 50.0
     # Вклад источников в сигнал катализаторов: SEC (официальный) приоритетнее СМИ.
     news_weight: float = 1.0
+    # Окно актуальности новостей: старше — не учитываются; вес = 1 − возраст/окно.
+    news_lookback_days: int = 14
     sec_weight: float = 2.0
     # Окно актуальности события 8-K / NT: вес линейно убывает от 1 до 0.
     sec_event_lookback_days: int = 30
@@ -113,7 +115,7 @@ class DataQualityConfig(BaseModel):
 class ScoringConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    version: str = "v1.2"
+    version: str = "v1.3"
     final_score_weights: FinalScoreWeights = FinalScoreWeights()
     factor_scores: FactorScoresConfig = FactorScoresConfig()
     # None — версии формул до v1.2 (без уровней неполноты), для воспроизведения.

@@ -40,7 +40,9 @@ STAGES: dict[str, dict] = {
         "checks": [
             "1–3: FMP (котировка, история, fundamentals, earnings, profile, новости), SEC EDGAR "
             "(10-K/10-Q/8-K/NT) — live smoke ниже",
-            "4, 7: резерв Alpaca (цены, котировка) / Finnhub (новости); переключение при "
+            "4, 7: резерв Alpaca (цены с той же корректировкой на сплиты, что у FMP; "
+            "котировка) / Finnhub (новости); общий режим расчёта primary / reserve / "
+            "degraded / unavailable, SEC учитывается явно; переключение при "
             "таймауте, сетевой и HTTP-ошибке — тесты source_router и e2e",
             "5–6: источник, режим (primary/reserve) и fetched_at каждого набора — "
             "raw_input_snapshot.sources",
@@ -97,7 +99,8 @@ STAGES: dict[str, dict] = {
         "tests": ["tests/test_factor_scores.py", "tests/test_catalysts.py"],
         "checks": [
             "1–7: по каждому фактору — входы, правило, оценка (кнопка «Подробнее»)",
-            "7: Catalysts = новости + события SEC (8-K по пунктам, NT 10-K/10-Q), "
+            "7: Catalysts = новости за 14 дней (будущие, без даты и устаревшие отброшены) "
+            "+ события SEC (8-K по пунктам, NT 10-K/10-Q), "
             "вес по давности, SEC приоритетнее СМИ",
             "8–9: шкала 0–100, веса 20/15/15/15/10/10/15 из config/thresholds.yaml",
         ],
@@ -148,7 +151,8 @@ STAGES: dict[str, dict] = {
         "tests": ["tests/test_source_health.py", "tests/test_probe.py"],
         "checks": [
             "1–4: /health — состояние, последний успех, latency по FMP, SEC, Alpaca, Finnhub",
-            "5: errors_24h, total_errors, last_error с классом причины",
+            "5: errors_24h, total_errors; текущая ошибка (last_error, класс) очищается "
+            "при восстановлении, последний сбой — last_failure_at / last_failure_error",
             "6, 8: принудительный сбой и восстановление без ручной правки истории",
             "7: mode (primary/reserve/degraded/unavailable) и data_mode последнего расчёта",
         ],
@@ -183,7 +187,9 @@ STAGES: dict[str, dict] = {
             "1: тикер проходит всю цепочку до Telegram (live smoke ниже)",
             "2–4: backend = история = Telegram; повтор на сохранённых данных совпадает",
             "5: отключение API → резерв или честное сообщение",
-            "6–7: оба прогона сохранены; блокирующих дефектов нет",
+            "6: оба прогона сохранены (автотесты; на сервере — live ниже)",
+            "7: отсутствие блокирующих дефектов подтверждается только на live-демонстрации "
+            "(заполняется приёмщиком)",
         ],
         "screens": [
             "запись экрана: запрос тикера → кнопки → /history",

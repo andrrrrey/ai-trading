@@ -75,7 +75,7 @@ def _market(ticker: str, n: int = 260, base: float = 100.0) -> MarketData:
             NewsItem(
                 ticker=ticker,
                 title="Company beats estimates and raises guidance",
-                published_at=FETCHED,
+                published_at=datetime.now(UTC),  # свежая: в окне актуальности
                 source="fake",
                 fetched_at=FETCHED,
             )
@@ -294,3 +294,19 @@ async def test_unknown_ticker_is_not_saved(session_factory):
     service = make_service(session_factory, {"NVDA": _market("NVDA")})
     await service.analyze("ZZZZ")
     assert "пуста" in await service.history("ZZZZ")
+
+
+async def test_webhook_is_removed_before_polling():
+    from app.bot.bot import prepare_polling
+
+    class FakeBot:
+        def __init__(self):
+            self.calls = []
+
+        async def delete_webhook(self, **kwargs):
+            self.calls.append(kwargs)
+            return True
+
+    bot = FakeBot()
+    await prepare_polling(bot)
+    assert bot.calls == [{"drop_pending_updates": False}]

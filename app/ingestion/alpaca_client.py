@@ -23,6 +23,7 @@ _NEW_YORK = ZoneInfo("America/New_York")
 # Глубина истории в календарных днях: ~500 торговых баров — с запасом для EMA200.
 # Без явного ``start`` Alpaca отдаёт бары только с начала текущего дня.
 DEFAULT_LOOKBACK_DAYS = 730
+PRICE_ADJUSTMENT = "split"
 
 
 def _now() -> datetime:
@@ -90,7 +91,11 @@ class AlpacaClient(BaseSourceClient):
             "timeframe": timeframe,
             "start": start,
             "limit": limit,
-            "adjustment": "raw",
+            # Единая политика с основным источником: FMP historical-price-eod/full
+            # отдаёт цены, скорректированные на сплиты (без дивидендов). Alpaca
+            # "split" делает то же самое; "raw" дал бы скачок цены в день сплита
+            # и исказил EMA, ATR, гэп и Momentum в резервном режиме.
+            "adjustment": PRICE_ADJUSTMENT,
         }
         raw_bars: list[Any] = []
         page_token: str | None = None

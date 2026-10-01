@@ -3,8 +3,10 @@
 Этап 1 не использует LLM для числовых расчётов. Правило v1.2 (базовое правило
 Этапа 1; новостная часть заменяется полноценной оценкой новостей на Этапе 2):
 
-1. Новости: каждый уникальный заголовок получает словарную оценку -1/0/+1;
-   ``news_sentiment`` — среднее.
+1. Новости: учитываются только заголовки не старше ``news_lookback_days`` (v1.3);
+   будущие и недатированные отбрасываются (их число сохраняется). Каждый
+   заголовок получает словарную оценку -1/0/+1 и вес ``w = 1 − возраст/окно``;
+   ``news_sentiment = Σ оценка·w / Σ w``.
 2. SEC (официальный источник, приоритетнее СМИ):
    - 8-K оценивается по пунктам события: негативные пункты −1, позитивные +0.5
      (они неоднозначны — асимметрия), остальные 0; уведомления о просрочке
@@ -25,11 +27,14 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ingestion.schemas import Filing, NewsItem
 from app.scoring.thresholds import CatalystsConfig
+
+_NEW_YORK = ZoneInfo("America/New_York")
 
 _POSITIVE = {
     "beat",
@@ -106,7 +111,10 @@ class CatalystAnalysis(BaseModel):
     signal: float | None = None
     news_available: bool = True
     filings_available: bool = True
-    news_count: int = 0
+    news_count: int = 0  # новости в окне актуальности, вошедшие в оценку
+    news_stale_count: int = 0  # старше окна — отброшены
+    news_future_count: int = 0  # дата позже даты расчёта — отброшены
+    news_undated_count: int = 0  # без даты — отброшены
     filing_count: int = 0
     sec_event_count: int = 0
     recent_report_count: int = 0
@@ -117,7 +125,8 @@ class CatalystAnalysis(BaseModel):
     evidence: list[CatalystEvidence] = Field(default_factory=list)
     rule: str = (
         "signal = (news_weight·news_sentiment + sec_weight·sec_event_score) / Σ весов "
-        "доступных компонент; news_sentiment — среднее оценок заголовков (−1/0/+1); "
+        "доступных компонент; news_sentiment — Σ оценка·w / Σ w по заголовкам за окно "
+        "(−1/0/+1, w = 1 − возраст/окно); "
         "sec_event_score — Σ знак·w / Σ w по 8-K/NT за окно, w = 1 − возраст/окно"
     )
 
@@ -204,9 +213,30 @@ def analyze_catalysts(
             seen_filings.add(key)
             unique_filings.append(filing)
 
-    # --- новости ---
-    headline_scores = [_headline_score(item.title) for item in unique_news]
-    sentiment = sum(headline_scores) / len(headline_scores) if headline_scores else None
+    # --- новости: только свежие, с затуханием по возрасту ---
+    recent_news: list[tuple[NewsItem, float, float]] = []  # (новость, оценка, вес)
+    stale = future = undated = 0
+    for item in unique_news:
+        if item.published_at is None:
+            undated += 1
+            continue
+        published = item.published_at
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=UTC)
+        age = (calc_date - published.astimezone(_NEW_YORK).date()).days
+        if age < 0:
+            future += 1
+        elif age >= cfg.news_lookback_days:
+            stale += 1
+        else:
+            weight = 1.0 - age / cfg.news_lookback_days
+            recent_news.append((item, _headline_score(item.title), weight))
+    total_news_weight = sum(w for _, _, w in recent_news)
+    sentiment = (
+        sum(score * w for _, score, w in recent_news) / total_news_weight
+        if total_news_weight > 0
+        else None
+    )
 
     # --- события SEC ---
     sec_evidence: list[CatalystEvidence] = []
@@ -272,13 +302,16 @@ def analyze_catalysts(
             source=item.source,
             url=item.url,
             score=score,
+            weight=round(weight, 4),
         )
-        for item, score in zip(unique_news, headline_scores, strict=False)
+        for item, score, weight in recent_news
     ]
     # SEC-события первыми: официальный источник приоритетнее СМИ.
     evidence = sec_evidence + news_evidence + report_evidence
 
-    sources = sorted({item.source for item in unique_news} | {f.source for f in unique_filings})
+    sources = sorted(
+        {item.source for item, _, _ in recent_news} | {f.source for f in unique_filings}
+    )
     latest_news = next((n.published_at for n in unique_news if n.published_at), None)
     latest_filing = next((f.filed_date for f in unique_filings if f.filed_date), None)
     return CatalystAnalysis(
@@ -287,7 +320,10 @@ def analyze_catalysts(
         signal=signal,
         news_available=news_available,
         filings_available=filings_available,
-        news_count=len(unique_news),
+        news_count=len(recent_news),
+        news_stale_count=stale,
+        news_future_count=future,
+        news_undated_count=undated,
         filing_count=len(unique_filings),
         sec_event_count=sec_event_count,
         recent_report_count=len(report_evidence),

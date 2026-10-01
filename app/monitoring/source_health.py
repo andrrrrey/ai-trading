@@ -49,9 +49,13 @@ class SourceState(BaseModel):
     consecutive_errors: int = 0
     total_errors: int = 0
     errors_24h: int = 0
+    # Текущая ошибка: только пока источник в сбое; очищается при восстановлении.
     last_error: str | None = None
-    # Класс причины последней ошибки: timeout | network | rate_limit | auth | no_data …
+    # Класс текущей ошибки: timeout | network | rate_limit | auth | no_data …
     last_error_kind: str | None = None
+    # Последний сбой (сохраняется и после восстановления — для разбора инцидентов).
+    last_failure_at: datetime | None = None
+    last_failure_error: str | None = None
 
 
 def _error_kind(error: str | None) -> str | None:
@@ -70,7 +74,9 @@ def classify(state: SourceState, now: datetime | None = None) -> SourceState:
         state.success_age_seconds = round(
             (now - _aware(state.last_success_at)).total_seconds(), 1
         )
-    state.last_error_kind = _error_kind(state.last_error) if state.status == "error" else None
+    if state.status != "error":
+        state.last_error = None
+    state.last_error_kind = _error_kind(state.last_error)
     if state.last_checked_at is None:
         state.state = "unknown"
     elif state.status == "error":
@@ -126,11 +132,14 @@ class SourceHealthMonitor:
         if record.status == "ok":
             state.last_success_at = now
             state.consecutive_errors = 0
+            state.last_error = None
         else:
             state.consecutive_errors += 1
             state.total_errors += 1
             state.errors_24h += 1
             state.last_error = record.error
+            state.last_failure_at = now
+            state.last_failure_error = record.error
         self._states[record.source] = state
         if self._session_factory is not None:
             await self._persist(record, state, now)
@@ -199,6 +208,16 @@ class SourceHealthMonitor:
                         )
                     )
                     errors = SourceHealth.source == name, SourceHealth.status == "error"
+                    last_failure = (
+                        await session.execute(
+                            select(SourceHealth.checked_at, SourceHealth.last_error)
+                            .where(*errors)
+                            .order_by(SourceHealth.checked_at.desc(), SourceHealth.id.desc())
+                            .limit(1)
+                        )
+                    ).first()
+                    if last_failure is not None:
+                        state.last_failure_at, state.last_failure_error = last_failure
                     state.total_errors = await session.scalar(
                         select(func.count()).select_from(SourceHealth).where(*errors)
                     )
@@ -243,8 +262,14 @@ async def latest_data_mode(
         "benchmark": sources.get("benchmark"),
         "fundamentals": sources.get("fundamentals"),
         "earnings": sources.get("earnings"),
-        "news": {"sources": sources.get("news"), "mode": sources.get("news_mode")},
+        "news": (
+            sources.get("news")
+            if isinstance(sources.get("news"), dict)
+            else {"sources": sources.get("news"), "mode": sources.get("news_mode")}
+        ),
         "filings": sources.get("filings"),
+        "quote": sources.get("quote"),
+        "profile": sources.get("profile"),
     }
 
 

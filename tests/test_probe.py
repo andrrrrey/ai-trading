@@ -118,3 +118,21 @@ async def test_recovery_after_failure_needs_no_manual_fix(session_factory):
     state = (await monitor.snapshot_from_db(("fmp",)))["fmp"]
     assert state["state"] == "ok"
     assert state["total_errors"] == 1  # история сбоя сохранена
+
+
+async def test_recovery_clears_current_error_but_keeps_last_failure(session_factory):
+    from app.ingestion.base_client import HealthRecord
+
+    for monitor_db in (None, session_factory):  # в памяти и через БД
+        monitor = SourceHealthMonitor(monitor_db)
+        await monitor.record(HealthRecord("fmp", "error", 10.0, "timeout: down"))
+        await monitor.record(HealthRecord("fmp", "ok", 50.0, None))
+        state = (
+            (await monitor.snapshot_from_db(("fmp",)))["fmp"]
+            if monitor_db
+            else monitor.snapshot()["fmp"]
+        )
+        assert state["state"] == "ok"
+        assert state["last_error"] is None and state["last_error_kind"] is None
+        assert state["last_failure_error"] == "timeout: down"
+        assert state["last_failure_at"] is not None
