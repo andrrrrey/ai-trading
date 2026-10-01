@@ -1,19 +1,19 @@
 # Подэтап 1.1 — Источники данных
 
-- Сформировано: 2026-10-01 05:38 UTC (`scripts/collect_evidence.py`)
-- Commit: `a339b9a` · версия формул: `v1.2`
+- Сформировано: 2026-10-01 12:57 UTC (`scripts/collect_evidence.py`)
+- Commit: `44a6e6a` · версия формул: `v1.3`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
 - 1–3: FMP (котировка, история, fundamentals, earnings, profile, новости), SEC EDGAR (10-K/10-Q/8-K/NT) — live smoke ниже
-- 4, 7: резерв Alpaca (цены, котировка) / Finnhub (новости); переключение при таймауте, сетевой и HTTP-ошибке — тесты source_router и e2e
+- 4, 7: резерв Alpaca (цены с той же корректировкой на сплиты, что у FMP; котировка) / Finnhub (новости); общий режим расчёта primary / reserve / degraded / unavailable, SEC учитывается явно; переключение при таймауте, сетевой и HTTP-ошибке — тесты source_router и e2e
 - 5–6: источник, режим (primary/reserve) и fetched_at каждого набора — raw_input_snapshot.sources
 
 ## Автотесты подэтапа
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_fmp_client.py tests/test_sec_edgar_client.py tests/test_alpaca_finnhub.py tests/test_source_router.py
-...............                                                          [100%]
-15 passed in 1.75s
+................                                                         [100%]
+16 passed in 1.18s
 [exit code 0]
 ```
 
