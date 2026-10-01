@@ -68,11 +68,26 @@ def _source_line(signal: Signal) -> str:
     sources = (signal.raw_input_snapshot or {}).get("sources", {})
     names: set[str] = set()
     for value in sources.values():
-        if isinstance(value, dict) and value.get("source"):
-            names.add(str(value["source"]))
-        elif isinstance(value, list):
+        if isinstance(value, dict):
+            if value.get("sources"):
+                names.update(str(item) for item in value["sources"] if item)
+            elif value.get("source") and value.get("mode") not in ("unavailable", "no_data"):
+                names.add(str(value["source"]))
+        elif isinstance(value, list):  # записи до v1.3
             names.update(str(item) for item in value if item)
     return _e(", ".join(sorted(names)) or "н/д")
+
+
+_DATASET_TITLES = {
+    "price_history": "цены",
+    "benchmark": "бенчмарк SPY",
+    "fundamentals": "отчётность",
+    "earnings": "дата отчётности",
+    "news": "новости",
+    "filings": "SEC EDGAR",
+    "quote": "котировка",
+    "profile": "профиль",
+}
 
 
 def _mode_line(signal: Signal) -> str | None:
@@ -81,19 +96,30 @@ def _mode_line(signal: Signal) -> str | None:
     if mode is None:
         return None
     if mode == "primary":
-        return "Режим данных: основной источник"
-    reserve = []
-    for kind, title in (
-        ("price_history", "цены"),
-        ("benchmark", "бенчмарк"),
-        ("quote", "котировка"),
-    ):
-        entry = sources.get(kind) or {}
+        return "Режим данных: основные источники"
+    reserve, missing = [], []
+    for kind, title in _DATASET_TITLES.items():
+        entry = sources.get(kind)
+        if not isinstance(entry, dict):
+            continue
         if entry.get("mode") == "reserve":
-            reserve.append(f"{title} — {entry.get('source')}")
-    if sources.get("news_mode") == "reserve":
+            used = entry.get("sources") or [entry.get("source")]
+            reserve.append(f"{title} — {', '.join(str(u) for u in used)}")
+        elif entry.get("mode") in ("unavailable", "no_data"):
+            missing.append(title + (" (нет данных)" if entry["mode"] == "no_data" else ""))
+    if sources.get("news_mode") == "reserve":  # записи до v1.3
         reserve.append("новости — " + ", ".join(sources.get("news") or []))
-    return "⚠️ Режим данных: РЕЗЕРВНЫЙ (" + _e("; ".join(reserve)) + ")"
+    parts = []
+    if reserve:
+        parts.append("резерв: " + "; ".join(reserve))
+    if missing:
+        parts.append("недоступно: " + ", ".join(missing))
+    title = {
+        "reserve": "⚠️ Режим данных: РЕЗЕРВНЫЙ",
+        "degraded": "⚠️ Режим данных: ЧАСТИЧНЫЙ",
+        "unavailable": "⛔ Режим данных: НЕДОСТАТОЧНО ДАННЫХ",
+    }.get(mode, f"Режим данных: {mode}")
+    return title + (" (" + _e(" · ".join(parts)) + ")" if parts else "")
 
 
 def _raw_inputs(signal: Signal) -> dict:

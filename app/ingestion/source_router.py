@@ -48,6 +48,29 @@ PRIMARY_SOURCES: dict[str, str] = {
 _NO_DATA_KINDS = frozenset({ERROR_NO_DATA, ERROR_NOT_FOUND})
 
 
+# Наборы данных, без которых Final Score не рассчитывается (см. data_quality).
+CRITICAL_DATASETS = ("price_history", "fundamentals", "benchmark")
+NONCRITICAL_DATASETS = ("earnings", "news", "filings", "quote", "profile")
+_MISSING_MODES = frozenset({"unavailable", "no_data"})
+
+
+def aggregate_mode(entries: dict[str, dict]) -> str:
+    """Общий режим расчёта по режимам наборов данных.
+
+    unavailable — нет критичного набора; degraded — нет некритичного набора
+    (включая SEC); reserve — часть данных из резервного источника; primary —
+    всё из основных источников.
+    """
+    modes = {kind: (entries.get(kind) or {}).get("mode") for kind in entries}
+    if any(modes.get(kind) in _MISSING_MODES for kind in CRITICAL_DATASETS):
+        return "unavailable"
+    if any(modes.get(kind) in _MISSING_MODES for kind in NONCRITICAL_DATASETS):
+        return "degraded"
+    if "reserve" in modes.values():
+        return "reserve"
+    return "primary"
+
+
 def source_mode(data_kind: str, source: str | None) -> str:
     """«primary» если данные пришли из основного источника, иначе «reserve»."""
     if not source:

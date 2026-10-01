@@ -43,6 +43,16 @@ async def _heartbeat(bot: Bot) -> None:
         await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
+async def prepare_polling(bot: Bot) -> None:
+    """Снимает webhook: при активном webhook Telegram отклоняет getUpdates (polling).
+
+    Накопленные обновления не сбрасываются — сообщения, отправленные боту, пока
+    он был остановлен, будут обработаны.
+    """
+    await bot.delete_webhook(drop_pending_updates=False)
+    logger.info("webhook снят (если был) — режим long polling")
+
+
 def build_dispatcher(service: BotService) -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(build_router(service))
@@ -67,6 +77,7 @@ async def run() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dispatcher = build_dispatcher(service)
+    await prepare_polling(bot)
     logger.info("Запуск Telegram-бота (long polling)")
     heartbeat = asyncio.create_task(_heartbeat(bot))
     try:

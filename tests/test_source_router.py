@@ -95,3 +95,24 @@ async def test_all_sources_unavailable_raises():
     with pytest.raises(AllSourcesUnavailableError):
         await router.get_price_history("AAPL")
     await router.aclose()
+
+
+def test_aggregate_mode_priority():
+    from app.ingestion.source_router import aggregate_mode
+
+    ok = {"mode": "primary"}
+    base = {k: ok for k in (
+        "price_history", "fundamentals", "benchmark", "earnings", "news", "filings",
+        "quote", "profile",
+    )}
+    assert aggregate_mode(base) == "primary"
+    assert aggregate_mode({**base, "price_history": {"mode": "reserve"}}) == "reserve"
+    # сценарий ревью: цены основные, но новости/котировка/профиль недоступны
+    gaps = {**base, "news": {"mode": "unavailable"}, "quote": {"mode": "unavailable"},
+            "profile": {"mode": "unavailable"}}
+    assert aggregate_mode(gaps) == "degraded"
+    assert aggregate_mode({**base, "filings": {"mode": "unavailable"}}) == "degraded"
+    assert aggregate_mode({**base, "news": {"mode": "no_data"}}) == "degraded"
+    # degraded важнее reserve, critical unavailable важнее всего
+    assert aggregate_mode({**gaps, "price_history": {"mode": "reserve"}}) == "degraded"
+    assert aggregate_mode({**gaps, "benchmark": {"mode": "unavailable"}}) == "unavailable"

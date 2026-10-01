@@ -1,20 +1,20 @@
 # Подэтап 1.8 — Мониторинг источников и ошибок
 
-- Сформировано: 2026-10-01 05:38 UTC (`scripts/collect_evidence.py`)
-- Commit: `a339b9a` · версия формул: `v1.2`
+- Сформировано: 2026-10-01 12:57 UTC (`scripts/collect_evidence.py`)
+- Commit: `44a6e6a` · версия формул: `v1.3`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
 - 1–4: /health — состояние, последний успех, latency по FMP, SEC, Alpaca, Finnhub
-- 5: errors_24h, total_errors, last_error с классом причины
+- 5: errors_24h, total_errors; текущая ошибка (last_error, класс) очищается при восстановлении, последний сбой — last_failure_at / last_failure_error
 - 6, 8: принудительный сбой и восстановление без ручной правки истории
 - 7: mode (primary/reserve/degraded/unavailable) и data_mode последнего расчёта
 
 ## Автотесты подэтапа
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_source_health.py tests/test_probe.py
-.............                                                            [100%]
-13 passed in 1.46s
+..............                                                           [100%]
+14 passed in 0.92s
 [exit code 0]
 ```
 

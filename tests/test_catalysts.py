@@ -31,8 +31,8 @@ def test_headline_sentiment_is_deterministic_and_deduplicated():
         news("Company announces quarterly results"),
     ]
 
-    first = analyze_catalysts(inputs, [])
-    second = analyze_catalysts(list(reversed(inputs)), [])
+    first = analyze_catalysts(inputs, [], calc_date=FETCHED.date())
+    second = analyze_catalysts(list(reversed(inputs)), [], calc_date=FETCHED.date())
 
     assert first.news_count == 3
     assert first.sentiment == 0.0
@@ -50,7 +50,7 @@ def test_sec_filing_is_preserved_as_sourced_evidence():
         fetched_at=FETCHED,
     )
 
-    result = analyze_catalysts([], [filing, filing])
+    result = analyze_catalysts([], [filing, filing], calc_date=FETCHED.date())
 
     assert result.sentiment is None
     assert result.filing_count == 1
@@ -124,3 +124,45 @@ def test_unavailable_sources():
         [], [], news_available=False, filings_available=False, calc_date=CALC
     )
     assert both_down.signal is None
+
+
+def dated_news(title: str, when: datetime | None) -> NewsItem:
+    return NewsItem(ticker="AAPL", title=title, published_at=when, source="fmp",
+                    fetched_at=FETCHED)
+
+
+def test_old_positive_news_does_not_create_catalyst():
+    # сценарий ревью: позитивная новость от 2020-01-01 при расчёте на 2026-10-01
+    result = analyze_catalysts(
+        [dated_news("Company beats estimates", datetime(2020, 1, 1, tzinfo=UTC))],
+        [],
+        calc_date=date(2026, 10, 1),
+    )
+    assert result.sentiment is None
+    assert result.signal == 0.0  # источники ответили, свежих событий нет → 50
+    assert result.news_count == 0 and result.news_stale_count == 1
+    assert result.evidence == []
+
+
+def test_future_and_undated_news_are_excluded_and_counted():
+    result = analyze_catalysts(
+        [
+            dated_news("Company beats estimates", datetime(2026, 10, 5, tzinfo=UTC)),
+            dated_news("Company raises guidance", None),
+        ],
+        [],
+        calc_date=CALC,
+    )
+    assert result.news_future_count == 1 and result.news_undated_count == 1
+    assert result.sentiment is None
+
+
+def test_news_weight_decays_with_age():
+    today_neg = dated_news("Company faces fraud probe", datetime(2026, 9, 30, 14, tzinfo=UTC))
+    week_old_pos = dated_news("Company beats estimates", datetime(2026, 9, 23, 14, tzinfo=UTC))
+
+    result = analyze_catalysts([today_neg, week_old_pos], [], calc_date=CALC)
+
+    # веса: 1.0 (сегодня) и 1 − 7/14 = 0.5 → (−1·1 + 1·0.5) / 1.5
+    assert result.sentiment == pytest.approx(-1.0 / 3.0)
+    assert {e.weight for e in result.evidence} == {1.0, 0.5}

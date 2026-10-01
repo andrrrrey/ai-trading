@@ -18,8 +18,8 @@ from datetime import datetime
 from app.calculation import build_raw_inputs, calculate
 from app.db.repository import save_signal, upsert_active_formula_version
 from app.ingestion.base_client import SourceError
-from app.ingestion.normalization import NEW_YORK
-from app.ingestion.source_router import source_mode
+from app.ingestion.normalization import KEY_FUNDAMENTAL_FIELDS, NEW_YORK
+from app.ingestion.source_router import aggregate_mode, source_mode
 from app.scoring import (
     ScoringConfig,
     active_formula_version,
@@ -31,12 +31,38 @@ logger = logging.getLogger(__name__)
 BENCHMARK_TICKER = "SPY"
 
 
-def _source_entry(data_kind: str, source: str | None, fetched_at: datetime | None) -> dict:
+def _source_entry(
+    data_kind: str,
+    source: str | None,
+    fetched_at: datetime | None,
+    *,
+    available: bool = True,
+    has_data: bool = True,
+) -> dict:
+    """Источник и режим набора данных: primary | reserve | no_data | unavailable."""
+    if not available or not source:
+        mode = "unavailable"
+    elif not has_data:
+        mode = "no_data"
+    else:
+        mode = source_mode(data_kind, source)
     return {
-        "source": source,
-        "mode": source_mode(data_kind, source),
-        "fetched_at": fetched_at.isoformat() if fetched_at else None,
+        "source": source if available else None,
+        "mode": mode,
+        "fetched_at": fetched_at.isoformat() if fetched_at and available else None,
     }
+
+
+def _feed_entry(data_kind: str, sources: list[str], *, available: bool) -> dict:
+    """Новости / SEC filings: список фактических источников и режим набора."""
+    entry = _source_entry(
+        data_kind, sources[0] if sources else data_kind, None,
+        available=available, has_data=bool(sources),
+    )
+    entry["sources"] = sources
+    if sources and any(source_mode(data_kind, s) == "reserve" for s in sources):
+        entry["mode"] = "reserve"
+    return entry
 
 
 class Pipeline:
@@ -89,30 +115,39 @@ class Pipeline:
         # даст Rule Engine на подэтапе 2.2. Пользователю он не показывается.
         status = risk.allowed_max_status
 
-        price_source = market.price_history.source
-        news_sources = sorted({item.source for item in market.news})
+        fund = market.fundamentals
         source_context = {
             "price_history": _source_entry(
-                "price_history", price_source, market.price_history.fetched_at
+                "price_history", market.price_history.source, market.price_history.fetched_at
             ),
             "fundamentals": _source_entry(
-                "fundamentals", market.fundamentals.source, market.fundamentals.fetched_at
+                "fundamentals",
+                fund.source,
+                fund.fetched_at,
+                has_data=any(getattr(fund, f) is not None for f in KEY_FUNDAMENTAL_FIELDS),
             ),
             "earnings": _source_entry(
-                "earnings", market.earnings.source, market.earnings.fetched_at
+                "earnings",
+                market.earnings.source,
+                market.earnings.fetched_at,
+                available=earnings_available,
             ),
             "benchmark": _source_entry(
                 "price_history",
                 benchmark.source if benchmark else None,
                 benchmark.fetched_at if benchmark else None,
+                available=benchmark is not None and bool(benchmark.bars),
             ),
-            "news": news_sources,
-            "news_mode": (
-                source_mode("news", news_sources[0])
-                if news_sources
-                else ("no_data" if market.news_available else "unavailable")
+            "news": _feed_entry(
+                "news",
+                sorted({item.source for item in market.news}),
+                available=market.news_available,
             ),
-            "filings": sorted({item.source for item in market.filings}),
+            "filings": _feed_entry(
+                "filings",
+                sorted({item.source for item in market.filings}),
+                available=market.filings_available,
+            ),
             "quote": _source_entry(
                 "quote",
                 market.quote.source if market.quote else None,
@@ -124,10 +159,7 @@ class Pipeline:
                 market.profile.fetched_at if market.profile else None,
             ),
         }
-        modes = [
-            entry["mode"] for entry in source_context.values() if isinstance(entry, dict)
-        ] + [source_context["news_mode"]]
-        source_context["mode"] = "reserve" if "reserve" in modes else "primary"
+        source_context["mode"] = aggregate_mode(source_context)
 
         async with self._session_factory() as session:
             await upsert_active_formula_version(session, active_formula_version(self._config))
