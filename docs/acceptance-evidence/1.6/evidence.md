@@ -1,48 +1,22 @@
-# Подэтап 1.6 — артефакт проверки DoD
+# Подэтап 1.6 — Базовый Risk Filter
 
-Дата: 2026-09-19T05:10:07Z
+- Сформировано: 2026-10-01 04:29 UTC (`scripts/collect_evidence.py`)
+- Commit: `2b95e21` · версия формул: `v1.1`
+- Живые прогоны: нет — выполнить на сервере с --live
 
-## pytest — Risk Filter
-```
-..............                                                           [100%]
-14 passed in 0.32s
-```
+## Что подтверждает (пункты чек-листа)
+- 1–5: high_volatility, event_risk, gap_risk, liquidity_risk, overextension
+- 6: missing_data — короткая история, нет fundamentals/earnings, SEC или новости недоступны; Score помечается «предварительный»
+- 7–8: причина и значение каждого флага сохраняются в signals.risk_flags
+- 9: потолок статуса (allowed_max_status) сохраняется для Rule Engine Этапа 2
 
-## pytest — весь набор
+## Автотесты подэтапа
 ```
-........................................................................ [ 75%]
-........................                                                 [100%]
-96 passed in 6.64s
-```
-
-## ruff
-```
-All checks passed!
+$ python -m pytest -q -p no:cacheprovider tests/test_risk_filter.py
+................                                                         [100%]
+16 passed in 0.55s
+[exit code 0]
 ```
 
-## Демонстрация флагов (причина + значение + допустимый статус)
-```
-[здоровый] level=low allowed_max=BUY
-[высокая волатильность] level=medium allowed_max=WATCH
-    - high_volatility: ATR/close = 6.2%, порог 5%
-[перегрет (overextension)] level=medium allowed_max=BUY_ON_DIP
-    - overextension: Отклонение от EMA20 18.0%, порог 15%
-[низкая ликвидность] level=high allowed_max=WATCH
-    - liquidity_risk: Средний объём 20д 300,000 < 500,000
-[отчётность близко] level=medium allowed_max=BUY_ON_DIP
-    - event_risk: Отчётность через 2 раб. дн. (порог 3)
-[нет данных (объём)] level=high allowed_max=WATCH
-    - missing_data: Нет ключевых данных: avg_volume_20d
-[3 флага] level=high allowed_max=WATCH
-    - high_volatility: ATR/close = 7.0%, порог 5%
-    - gap_risk: Gap 8.0%, порог ±5%
-    - overextension: Отклонение от EMA20 20.0%, порог 15%
-```
-
-## Статус DoD 1.6
-- [x] 6 флагов: high_volatility, event_risk, gap_risk, overextension, liquidity_risk, missing_data (news_risk → Этап 2.1).
-- [x] Каждый флаг возвращает причину и конкретное значение.
-- [x] Каждый флаг проверен на граничных значениях (14 тестов).
-- [x] missing_data всегда даёт risk_level=high; максимум WATCH.
-- [x] risk_level: 0→low, 1–2→medium, >=3 или liquidity_risk→high.
-- [x] allowed_max_status передаётся в Rule Engine (2.2) для понижения статуса — риск не игнорируется.
+## Скриншоты / запись (добавить в эту папку после серверного запуска)
+- [ ] кнопка «Risk» с причинами флагов

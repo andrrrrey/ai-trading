@@ -193,7 +193,8 @@ STAGES: dict[str, dict] = {
 def _run(cmd: list[str]) -> str:
     result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     output = (result.stdout + result.stderr).strip()
-    return f"$ {' '.join(cmd)}\n{output}\n[exit code {result.returncode}]"
+    shown = ["python" if part == sys.executable else part for part in cmd]
+    return f"$ {' '.join(shown)}\n{output}\n[exit code {result.returncode}]"
 
 
 def _commit() -> str:
