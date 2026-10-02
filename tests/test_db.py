@@ -129,7 +129,7 @@ async def test_snapshot_contains_inputs(session):
     assert snap["features"]["rsi14"] == 66
     assert snap["fundamentals"]["eps"] == 6.1
     assert signal.risk_flags == []          # здоровый тикер — нет флагов
-    assert signal.formula_version == "v1.4"
+    assert signal.formula_version == "v1.5"
 
 
 # --------------------------------------------------------------------------- #

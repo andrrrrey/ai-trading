@@ -137,12 +137,28 @@ def price_change(series: pd.Series, n: int) -> pd.Series:
 
 
 def relative_strength(
-    ticker_close: pd.Series, benchmark_close: pd.Series, n: int = 63
+    ticker_close: pd.Series,
+    benchmark_close: pd.Series,
+    n: int = 63,
+    *,
+    align_by_date: bool = False,
 ) -> float | None:
     """Относительная сила против бенчмарка (SPY) за n дней, в проц. пунктах (ТЗ 7).
 
     ``RelStrength = (ret_n(ticker) − ret_n(SPY))·100``, ``ret_n = close_t/close_{t-n} − 1``.
+
+    ``align_by_date`` (формулы v1.5+): оба ряда сначала приводятся к общим датам,
+    чтобы доходности считались за одно и то же окно — даже если у тикера нет
+    последних баров, есть пропуски или ряды пришли из разных источников. Без
+    выравнивания (до v1.5) n отсчитывается по номеру бара в каждом ряду отдельно.
     """
+    if align_by_date:
+        joined = pd.concat(
+            [ticker_close.rename("ticker"), benchmark_close.rename("bench")],
+            axis=1,
+            join="inner",
+        ).dropna()
+        ticker_close, benchmark_close = joined["ticker"], joined["bench"]
     ticker_ret = _period_return(ticker_close, n)
     bench_ret = _period_return(benchmark_close, n)
     if ticker_ret is None or bench_ret is None:
@@ -238,7 +254,10 @@ _CRITICAL_FEATURES = ("price", "ema20", "rsi14", "atr14")
 
 
 def compute_features(
-    history: PriceHistory, benchmark: PriceHistory | None = None
+    history: PriceHistory,
+    benchmark: PriceHistory | None = None,
+    *,
+    align_benchmark_by_date: bool = False,
 ) -> FeatureSet:
     """Считает FeatureSet по истории цен и (опционально) бенчмарку SPY.
 
@@ -270,7 +289,9 @@ def compute_features(
         else None
     )
     rel_strength = (
-        relative_strength(close, bench_close) if bench_close is not None else None
+        relative_strength(close, bench_close, align_by_date=align_benchmark_by_date)
+        if bench_close is not None
+        else None
     )
 
     features = FeatureSet(

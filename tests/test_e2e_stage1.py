@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import re
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest_asyncio
@@ -50,9 +51,15 @@ FMP_PROFILE = re.compile(r".*/stable/profile")
 ALPACA_BARS = re.compile(r".*/v2/stocks/.+/bars")
 
 
+
+def history_start(n: int) -> date:
+    """Первый бар истории из n дневных баров, последний из которых — вчера (ET):
+    история «свежая» для проверки max_last_bar_age_business_days (v1.5)."""
+    return datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=n)
+
 def _fmp_hist(n: int = 260, base: float = 150.0) -> list[dict]:
     rows = []
-    d = date(2025, 1, 1)
+    d = history_start(n)
     prev = base
     for i in range(n):
         close = base + i * 0.2 + 4.0 * math.sin(i / 7.0)
@@ -76,7 +83,7 @@ def _fmp_hist(n: int = 260, base: float = 150.0) -> list[dict]:
 
 def _alpaca_bars(n: int = 260, base: float = 150.0) -> dict:
     bars = []
-    d = date(2025, 1, 1)
+    d = history_start(n)
     prev = base
     for i in range(n):
         close = base + i * 0.2 + 4.0 * math.sin(i / 7.0)

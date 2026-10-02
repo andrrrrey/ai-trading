@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -171,6 +172,13 @@ class SourceHealth(Base):
     """Мониторинг источников (заполняется на подэтапе 1.8)."""
 
     __tablename__ = "source_health"
+    __table_args__ = (
+        # /health: последняя проверка и счётчики ошибок по источнику (миграция 0003)
+        Index("ix_source_health_source_checked_at", "source", "checked_at"),
+        Index("ix_source_health_source_status_checked_at", "source", "status", "checked_at"),
+        # очистка старых записей
+        Index("ix_source_health_checked_at", "checked_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String(32), index=True)

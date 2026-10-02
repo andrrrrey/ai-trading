@@ -31,10 +31,16 @@ class FundamentalsConfig(BaseModel):
     eps_positive_score: float = 70.0
     eps_negative_score: float = 30.0
     debt_equity_penalty: float = 50.0
+    # v1.5+: балл D/E при отрицательном собственном капитале (D/E < 0). None —
+    # правило до v1.5 (отрицательный D/E по формуле давал максимум 100).
+    negative_equity_de_score: float | None = None
 
 
 class RelativeStrengthConfig(BaseModel):
     rel_strength_multiplier: float = 5.0
+    # v1.5+: доходности тикера и SPY считаются на общих датах. False — правило до
+    # v1.5 (сравнение по номеру бара от конца ряда).
+    align_by_date: bool = False
 
 
 class VolumeConfig(BaseModel):
@@ -45,6 +51,9 @@ class ValuationConfig(BaseModel):
     pe_fair_low: float = 10.0
     pe_fair_high: float = 40.0
     pe_negative_score: float = 25.0
+    # v1.5+: при отсутствии forward P/E берётся P/E TTM, затем годовой. False —
+    # правило до v1.5 (forward P/E, затем годовой).
+    prefer_ttm_pe: bool = False
 
 
 class CatalystsConfig(BaseModel):
@@ -110,6 +119,12 @@ class DataQualityConfig(BaseModel):
     # Не хватает стольких (и более) ключевых fundamentals — Final Score не выдаётся;
     # меньше (но не ноль) — достоверность пониженная.
     fundamentals_missing_critical: int = 3
+    # v1.5+: последний дневной бар старше стольких рабочих дней до даты расчёта —
+    # история устарела (тикер не торгуется / источник отдаёт старые данные),
+    # Final Score не выдаётся. None — проверка выключена (до v1.5).
+    max_last_bar_age_business_days: int | None = None
+    # v1.5+: профиль эмитента сообщает, что бумага не торгуется → критично.
+    check_actively_trading: bool = False
 
 
 class RiskFilterConfig(BaseModel):
@@ -119,6 +134,9 @@ class RiskFilterConfig(BaseModel):
     event_risk_days: int = 3
     gap_risk_pct: float = 5.0
     overextension_ema20_pct: float = 15.0
+    # v1.5+: сильное отклонение цены ВНИЗ от EMA20 (в %, положительное число).
+    # None — проверяется только отклонение вверх (до v1.5).
+    overextension_below_ema20_pct: float | None = None
     liquidity_min_avg_volume: float = 500_000
     news_risk_sentiment: float = -0.3
 

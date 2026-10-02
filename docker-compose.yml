@@ -45,6 +45,10 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      # Пороги и веса читаются с хоста: правка config/thresholds.yaml (с новым
+      # номером version) + `docker compose restart app bot` — без пересборки образа.
+      - ./config:/app/config:ro
     healthcheck:
       test:
         - CMD
@@ -61,6 +65,8 @@ services:
   bot:
     build: .
     command: ["python", "-m", "app.bot.bot"]
+    volumes:
+      - ./config:/app/config:ro
     env_file:
       - .env
     environment:

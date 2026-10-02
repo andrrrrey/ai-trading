@@ -83,7 +83,7 @@ async def test_get_price_history_maps_bars():
 @respx.mock
 async def test_get_fundamentals_uses_single_period():
     client, _ = make_client()
-    ratios = respx.get(re.compile(r".*/stable/ratios")).mock(
+    ratios = respx.get(re.compile(r".*/stable/ratios(\?|$)")).mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -102,6 +102,9 @@ async def test_get_fundamentals_uses_single_period():
     growth = respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
         return_value=httpx.Response(200, json=[{"growthRevenue": 0.08, "growthEPS": 0.12}])
     )
+    respx.get(re.compile(r".*/stable/ratios-ttm")).mock(
+        return_value=httpx.Response(200, json=[{"priceToEarningsRatioTTM": 27.5}])
+    )
 
     fundamentals = await client.get_fundamentals("AAPL", period="annual")
     await client.aclose()
@@ -113,6 +116,8 @@ async def test_get_fundamentals_uses_single_period():
     assert fundamentals.debt_equity == 1.2
     assert fundamentals.pe == 30.0
     assert fundamentals.forward_pe == 25.0
+    assert fundamentals.pe_ttm == 27.5
+    assert fundamentals.unavailable_parts == []
     # все три запроса ушли с одним period=annual
     for route in (ratios, metrics, growth):
         assert route.calls.last.request.url.params["period"] == "annual"

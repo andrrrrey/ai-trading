@@ -45,7 +45,9 @@ class FinnhubClient(BaseSourceClient):
             health_recorder=health_recorder,
         )
 
-    async def get_company_news(self, ticker: str, *, days: int = 7) -> list[NewsItem]:
+    async def get_company_news(self, ticker: str, *, days: int = 14) -> list[NewsItem]:
+        """Новости за ``days`` дней — то же окно, что news_lookback_days формулы
+        Catalysts, чтобы резервный режим не давал другой набор новостей."""
         today = _now().date()
         start = today - timedelta(days=days)
         data = await self._get_json(

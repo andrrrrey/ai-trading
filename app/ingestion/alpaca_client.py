@@ -24,6 +24,10 @@ _NEW_YORK = ZoneInfo("America/New_York")
 # Без явного ``start`` Alpaca отдаёт бары только с начала текущего дня.
 DEFAULT_LOOKBACK_DAYS = 730
 PRICE_ADJUSTMENT = "split"
+# Фид рыночных данных Alpaca: "iex" (бесплатный тариф — только биржа IEX, это
+# несколько процентов общего объёма торгов) или "sip" (все биржи США, платный).
+DEFAULT_FEED = "iex"
+FULL_VOLUME_FEEDS = frozenset({"sip"})
 
 
 def _now() -> datetime:
@@ -64,7 +68,9 @@ class AlpacaClient(BaseSourceClient):
         timeout: float = 15.0,
         max_retries: int = 3,
         health_recorder: HealthRecorder | None = None,
+        feed: str = DEFAULT_FEED,
     ):
+        self.feed = (feed or DEFAULT_FEED).lower()
         super().__init__(
             source="alpaca",
             base_url=base_url,
@@ -96,6 +102,7 @@ class AlpacaClient(BaseSourceClient):
             # "split" делает то же самое; "raw" дал бы скачок цены в день сплита
             # и исказил EMA, ATR, гэп и Momentum в резервном режиме.
             "adjustment": PRICE_ADJUSTMENT,
+            "feed": self.feed,
         }
         raw_bars: list[Any] = []
         page_token: str | None = None
@@ -129,12 +136,19 @@ class AlpacaClient(BaseSourceClient):
                 f"alpaca: нет баров для {ticker}", source=self.source, kind=ERROR_NO_DATA
             )
         return RawPriceHistory(
-            ticker=ticker, bars=bars, source=self.source, fetched_at=fetched
+            ticker=ticker,
+            bars=bars,
+            source=self.source,
+            fetched_at=fetched,
+            # IEX-объёмы несопоставимы с порогом ликвидности по всему рынку.
+            volume_partial=self.feed not in FULL_VOLUME_FEEDS,
         )
 
     async def get_latest_quote(self, ticker: str) -> Quote:
         """Цена последней сделки (резерв текущей котировки, ТЗ 4: Alpaca — quotes)."""
-        data = await self._get_json(f"/v2/stocks/{ticker}/trades/latest")
+        data = await self._get_json(
+            f"/v2/stocks/{ticker}/trades/latest", params={"feed": self.feed}
+        )
         trade = data.get("trade") if isinstance(data, dict) else None
         price = _to_float(trade.get("p")) if isinstance(trade, dict) else None
         if price is None:

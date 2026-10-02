@@ -18,7 +18,7 @@ QualityReport, чтобы вызывающий слой мог принять ч
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -26,6 +26,10 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from app.ingestion.schemas import Fundamentals, RawPriceHistory, SourcedModel
 
 NEW_YORK = ZoneInfo("America/New_York")
+
+# Дневной бар текущей даты считается завершённым только после закрытия основной
+# сессии (16:00 ET) с запасом на публикацию итоговых объёмов источниками.
+SESSION_BAR_FINAL_AT = time(16, 30)
 
 # Ключевые фундаментальные метрики: их отсутствие делает снапшот неполным.
 KEY_FUNDAMENTAL_FIELDS = (
@@ -70,6 +74,8 @@ class PriceHistory(SourcedModel):
 
     ticker: str
     bars: list[PriceBar]
+    # См. RawPriceHistory.volume_partial.
+    volume_partial: bool = False
 
 
 class QualityReport(BaseModel):
@@ -143,6 +149,7 @@ def normalize_price_history(
         bars=bars,
         source=raw.source,
         fetched_at=raw.fetched_at,
+        volume_partial=raw.volume_partial,
     )
     report = QualityReport(
         source=raw.source,
@@ -174,3 +181,23 @@ def normalize_fundamentals(raw: Fundamentals) -> tuple[Fundamentals, QualityRepo
         issues=issues,
     )
     return normalized, report
+
+
+def drop_unfinished_session_bar(
+    history: PriceHistory, now: datetime
+) -> tuple[PriceHistory, date | None]:
+    """Убирает дневной бар текущей сессии, если сессия ещё не завершена.
+
+    Во время торгов источники (Alpaca всегда, FMP — в зависимости от времени
+    обновления) отдают бар текущего дня с неполным объёмом и незакрытой ценой:
+    Volume Ratio, гэп и индикаторы по нему искажаются. Возвращает историю без
+    такого бара и его дату (None — ничего не убрано). Применяется до сохранения
+    исходных данных, поэтому повтор расчёта идёт по тому же набору баров.
+    """
+    if not history.bars:
+        return history, None
+    moment = now.astimezone(NEW_YORK) if now.tzinfo else now
+    last = history.bars[-1]
+    if last.date == moment.date() and moment.time() < SESSION_BAR_FINAL_AT:
+        return history.model_copy(update={"bars": history.bars[:-1]}), last.date
+    return history, None

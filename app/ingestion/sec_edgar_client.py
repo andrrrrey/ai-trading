@@ -9,7 +9,13 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from app.ingestion.base_client import BaseSourceClient, HealthRecorder, SourceError
+from app.ingestion.base_client import (
+    ERROR_INVALID_RESPONSE,
+    ERROR_NOT_FOUND,
+    BaseSourceClient,
+    HealthRecorder,
+    SourceError,
+)
 from app.ingestion.schemas import Filing
 
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -73,10 +79,13 @@ class SECEdgarClient(BaseSourceClient):
 
     async def get_cik(self, ticker: str) -> str:
         mapping = await self.load_cik_map()
-        cik = mapping.get(ticker.upper())
+        # В справочнике SEC класс акции пишется через дефис: BRK.B → BRK-B.
+        cik = mapping.get(ticker.upper()) or mapping.get(ticker.upper().replace(".", "-"))
         if cik is None:
             raise SourceError(
-                f"sec_edgar: CIK для тикера {ticker} не найден", source=self.source
+                f"sec_edgar: CIK для тикера {ticker} не найден",
+                source=self.source,
+                kind=ERROR_NOT_FOUND,
             )
         return cik
 
@@ -88,6 +97,12 @@ class SECEdgarClient(BaseSourceClient):
         """Последние филинги компании указанных форм."""
         cik = await self.get_cik(ticker)
         data = await self._get_json(f"/submissions/CIK{cik}.json")
+        if not isinstance(data, dict):
+            raise SourceError(
+                f"sec_edgar: неожиданный формат submissions для {ticker}",
+                source=self.source,
+                kind=ERROR_INVALID_RESPONSE,
+            )
         recent = (data.get("filings", {}) or {}).get("recent", {}) or {}
         form_list = recent.get("form", []) or []
         dates = recent.get("filingDate", []) or []

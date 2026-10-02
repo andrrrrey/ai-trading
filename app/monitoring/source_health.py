@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Signal, SourceHealth
@@ -171,6 +171,22 @@ class SourceHealthMonitor:
                 await session.commit()
         except Exception:  # noqa: BLE001 — мониторинг не должен ронять ingestion
             logger.exception("не удалось записать source_health для %s", record.source)
+
+    async def purge_older_than(self, days: int) -> int:
+        """Удаляет записи source_health старше ``days`` дней; возвращает их число.
+
+        Лента проверок пишется на каждый HTTP-запрос и каждый проход probe — без
+        очистки таблица растёт бесконечно, а /health считает по ней счётчики.
+        """
+        if self._session_factory is None or days <= 0:
+            return 0
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        async with self._session_factory() as session:
+            result = await session.execute(
+                delete(SourceHealth).where(SourceHealth.checked_at < cutoff)
+            )
+            await session.commit()
+        return result.rowcount or 0
 
     def snapshot(self) -> dict[str, dict]:
         """Текущее состояние всех источников (JSON-сериализуемое) для /health."""

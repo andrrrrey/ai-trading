@@ -61,6 +61,9 @@ class RawPriceBar(SourcedModel):
 class RawPriceHistory(SourcedModel):
     ticker: str
     bars: list[RawPriceBar]
+    # Объёмы покрывают лишь часть рынка (Alpaca free = только биржа IEX):
+    # абсолютный порог ликвидности по ним не проверяется.
+    volume_partial: bool = False
 
 
 class Fundamentals(SourcedModel):
@@ -73,6 +76,8 @@ class Fundamentals(SourcedModel):
     debt_equity: float | None = None
     pe: float | None = None
     forward_pe: float | None = None
+    # P/E за последние 12 месяцев (FMP ratios-ttm); годовой pe может отставать на год.
+    pe_ttm: float | None = None
     # Проставляется слоем нормализации: часть ключевых метрик отсутствует.
     is_incomplete: bool = False
     # Запросы, которые не удалось выполнить: "key-metrics (fmp: timeout)".

@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -32,13 +32,17 @@ class Settings(BaseSettings):
     alpaca_api_key_id: str = ""
     alpaca_api_secret_key: str = ""
     alpaca_base_url: str = "https://data.alpaca.markets"
+    # iex — бесплатный тариф (только биржа IEX); sip — все биржи США (платный).
+    alpaca_data_feed: str = "iex"
 
     finnhub_api_key: str = ""
     finnhub_base_url: str = "https://finnhub.io/api/v1"
 
     # ---- Telegram ----
     telegram_bot_token: str = ""
-    telegram_allowed_ids: list[int] = Field(default_factory=list)
+    # NoDecode: значение из .env/окружения не разбирается как JSON, а приходит
+    # строкой "1,2,3" в _parse_ids (иначе "123" или "1,2" роняли запуск).
+    telegram_allowed_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
     # Открытый доступ к боту (без whitelist) — только осознанным решением.
     telegram_allow_public: bool = False
 
@@ -64,13 +68,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     # Фоновая проверка источников для /health, сек; 0 — выключена.
     health_probe_interval_seconds: float = 600.0
+    # Срок хранения ленты проверок source_health, дней (очистка — в фоновом probe).
+    source_health_retention_days: int = 30
 
     @field_validator("telegram_allowed_ids", mode="before")
     @classmethod
     def _parse_ids(cls, value: object) -> object:
         """Разрешает список Telegram ID как строку "1,2,3" из .env."""
+        if isinstance(value, int):
+            return [value]
         if isinstance(value, str):
-            value = value.strip()
+            value = value.strip().strip("[]")
             if not value:
                 return []
             return [int(part) for part in value.split(",") if part.strip()]

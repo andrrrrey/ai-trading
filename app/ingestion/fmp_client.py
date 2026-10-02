@@ -8,11 +8,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.ingestion.base_client import (
+    ERROR_AUTH,
+    ERROR_INVALID_RESPONSE,
     ERROR_NO_DATA,
+    ERROR_RATE_LIMIT,
     BaseSourceClient,
     HealthRecorder,
     SourceError,
@@ -27,9 +32,34 @@ from app.ingestion.schemas import (
     RawPriceHistory,
 )
 
+logger = logging.getLogger(__name__)
+
+_NEW_YORK = ZoneInfo("America/New_York")
+
+# Ключи, в которых FMP сообщает об ошибке в теле ответа с HTTP 200.
+_ERROR_KEYS = ("Error Message", "error", "Error")
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def fmp_symbol(ticker: str) -> str:
+    """Символ в нотации FMP: класс акции через дефис (BRK.B → BRK-B)."""
+    return ticker.upper().replace(".", "-")
+
+
+def _classify_error_text(text: str) -> str:
+    lowered = text.lower()
+    if "limit" in lowered:
+        return ERROR_RATE_LIMIT
+    if any(
+        word in lowered
+        for word in ("api key", "apikey", "upgrade", "subscription", "restricted",
+                     "exclusive", "plan", "unauthorized", "forbidden")
+    ):
+        return ERROR_AUTH
+    return ERROR_INVALID_RESPONSE
 
 
 def _to_float(value: Any) -> float | None:
@@ -85,8 +115,24 @@ class FMPClient(BaseSourceClient):
             health_recorder=health_recorder,
         )
 
+    def _payload_error(self, payload: Any) -> tuple[str, str] | None:
+        """FMP иногда отвечает HTTP 200 с телом {"Error Message": "..."}.
+
+        Без этой проверки такой ответ выглядел бы как «пустые данные» и, например,
+        превращался в «тикер не найден» вместо честной ошибки ключа/лимита.
+        """
+        if not isinstance(payload, dict):
+            return None
+        for key in _ERROR_KEYS:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return _classify_error_text(value), f"ошибка API: {value.strip()[:200]}"
+        return None
+
     async def get_quote(self, ticker: str) -> Quote:
-        data = await self._get_json("/stable/quote", params={"symbol": ticker})
+        data = await self._get_json(
+            "/stable/quote", params={"symbol": fmp_symbol(ticker)}
+        )
         row = _first_row(data, source=self.source, ticker=ticker, what="quote")
         price = _to_float(row.get("price"))
         if price is None:
@@ -102,7 +148,9 @@ class FMPClient(BaseSourceClient):
         )
 
     async def get_price_history(self, ticker: str) -> RawPriceHistory:
-        data = await self._get_json("/stable/historical-price-eod/full", params={"symbol": ticker})
+        data = await self._get_json(
+            "/stable/historical-price-eod/full", params={"symbol": fmp_symbol(ticker)}
+        )
         rows = _as_rows(data)
         fetched = _now()
         bars = [
@@ -128,7 +176,9 @@ class FMPClient(BaseSourceClient):
         return RawPriceHistory(ticker=ticker, bars=bars, source=self.source, fetched_at=fetched)
 
     async def get_profile(self, ticker: str) -> CompanyProfile:
-        data = await self._get_json("/stable/profile", params={"symbol": ticker})
+        data = await self._get_json(
+            "/stable/profile", params={"symbol": fmp_symbol(ticker)}
+        )
         row = _first_row(data, source=self.source, ticker=ticker, what="profile")
         active = row.get("isActivelyTrading")
         return CompanyProfile(
@@ -146,15 +196,21 @@ class FMPClient(BaseSourceClient):
         )
 
     async def get_ratios(self, ticker: str) -> dict[str, Any]:
-        data = await self._get_json("/stable/ratios", params={"symbol": ticker})
+        data = await self._get_json(
+            "/stable/ratios", params={"symbol": fmp_symbol(ticker)}
+        )
         return _first_row(data, source=self.source, ticker=ticker, what="ratios")
 
     async def get_key_metrics(self, ticker: str) -> dict[str, Any]:
-        data = await self._get_json("/stable/key-metrics", params={"symbol": ticker})
+        data = await self._get_json(
+            "/stable/key-metrics", params={"symbol": fmp_symbol(ticker)}
+        )
         return _first_row(data, source=self.source, ticker=ticker, what="key-metrics")
 
     async def get_income_growth(self, ticker: str) -> dict[str, Any]:
-        data = await self._get_json("/stable/income-statement-growth", params={"symbol": ticker})
+        data = await self._get_json(
+            "/stable/income-statement-growth", params={"symbol": fmp_symbol(ticker)}
+        )
         return _first_row(data, source=self.source, ticker=ticker, what="income-statement-growth")
 
     async def get_fundamentals(self, ticker: str, period: str = "annual") -> Fundamentals:
@@ -170,11 +226,17 @@ class FMPClient(BaseSourceClient):
         запрос, пробрасывается ошибка источника (fundamentals нет совсем).
         """
         parts = ("ratios", "key-metrics", "income-statement-growth")
-        results = await asyncio.gather(
+        symbol = fmp_symbol(ticker)
+        *results, ttm_result = await asyncio.gather(
             *(
-                self._get_json(f"/stable/{part}", params={"symbol": ticker, "period": period})
+                self._get_json(f"/stable/{part}", params={"symbol": symbol, "period": period})
                 for part in parts
             ),
+            # P/E за последние 12 месяцев (TTM): годовой P/E посчитан по цене на
+            # конец финансового года и может отставать на год. Необязательный запрос:
+            # его сбой не делает fundamentals неполными — Valuation тогда считается
+            # по годовому P/E (это видно в правиле фактора).
+            self._get_json("/stable/ratios-ttm", params={"symbol": symbol}),
             return_exceptions=True,
         )
         unavailable: list[str] = []
@@ -189,6 +251,13 @@ class FMPClient(BaseSourceClient):
                 payloads.append(result)
         if len(unavailable) == len(parts):
             raise next(r for r in results if isinstance(r, SourceError))
+        if isinstance(ttm_result, SourceError):
+            logger.warning("fmp ratios-ttm недоступен для %s: %s", ticker, ttm_result.kind)
+            ttm_result = None
+        elif isinstance(ttm_result, BaseException):
+            raise ttm_result
+        ttm_rows = _as_rows(ttm_result)
+        ttm = ttm_rows[0] if ttm_rows else {}
         ratios, metrics, growth = payloads
         r = _as_rows(ratios)[:1]
         m = _as_rows(metrics)[:1]
@@ -213,13 +282,18 @@ class FMPClient(BaseSourceClient):
                 r.get("priceToEarningsRatio"), r.get("priceEarningsRatio"), m.get("peRatio")
             ),
             forward_pe=_to_float(m.get("forwardPE")),
+            pe_ttm=_first_number(
+                ttm.get("priceToEarningsRatioTTM"), ttm.get("peRatioTTM")
+            ),
             unavailable_parts=unavailable,
             source=self.source,
             fetched_at=_now(),
         )
 
     async def get_earnings(self, ticker: str) -> Earnings:
-        data = await self._get_json("/stable/earnings", params={"symbol": ticker})
+        data = await self._get_json(
+            "/stable/earnings", params={"symbol": fmp_symbol(ticker)}
+        )
         rows = _as_rows(data)
         next_date = _next_earnings_date(rows)
         return Earnings(
@@ -231,7 +305,7 @@ class FMPClient(BaseSourceClient):
 
     async def get_news(self, ticker: str, limit: int = 20) -> list[NewsItem]:
         data = await self._get_json(
-            "/stable/news/stock", params={"symbols": ticker, "limit": limit}
+            "/stable/news/stock", params={"symbols": fmp_symbol(ticker), "limit": limit}
         )
         fetched = _now()
         items: list[NewsItem] = []
@@ -292,8 +366,12 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def _next_earnings_date(rows: list[dict[str, Any]]) -> date | None:
-    """Ближайшая будущая дата отчётности из списка earnings."""
-    today = datetime.now(UTC).date()
+    """Ближайшая будущая дата отчётности из списка earnings.
+
+    «Сегодня» — по торговой зоне America/New_York (как и дата расчёта): иначе
+    вечером по Нью-Йорку отчётность текущего дня уже считалась бы прошедшей.
+    """
+    today = datetime.now(_NEW_YORK).date()
     future = sorted(
         d
         for row in rows
