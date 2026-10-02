@@ -1,7 +1,7 @@
 # Подэтап 1.2 — Получение и качество данных
 
-- Сформировано: 2026-10-02 07:35 UTC (`scripts/collect_evidence.py`)
-- Commit: `5cf7617` · версия формул: `v1.5`
+- Сформировано: 2026-10-02 17:55 UTC (`scripts/collect_evidence.py`)
+- Commit: `e236c23` · версия формул: `v1.5`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
@@ -14,7 +14,7 @@
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_normalization.py tests/test_base_client.py tests/test_ingestion_service.py tests/test_data_quality.py
 ..............................                                           [100%]
-30 passed in 5.12s
+30 passed in 5.00s
 [exit code 0]
 ```
 
