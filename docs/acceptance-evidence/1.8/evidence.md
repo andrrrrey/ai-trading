@@ -1,7 +1,7 @@
 # Подэтап 1.8 — Мониторинг источников и ошибок
 
-- Сформировано: 2026-10-02 04:39 UTC (`scripts/collect_evidence.py`)
-- Commit: `34660c1` · версия формул: `v1.4`
+- Сформировано: 2026-10-02 07:35 UTC (`scripts/collect_evidence.py`)
+- Commit: `5cf7617` · версия формул: `v1.5`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
@@ -15,7 +15,7 @@
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_source_health.py tests/test_probe.py
 ...............                                                          [100%]
-15 passed in 1.04s
+15 passed in 1.01s
 [exit code 0]
 ```
 

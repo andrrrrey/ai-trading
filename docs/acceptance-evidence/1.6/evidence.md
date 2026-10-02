@@ -1,7 +1,7 @@
 # Подэтап 1.6 — Базовый Risk Filter
 
-- Сформировано: 2026-10-02 04:39 UTC (`scripts/collect_evidence.py`)
-- Commit: `34660c1` · версия формул: `v1.4`
+- Сформировано: 2026-10-02 07:35 UTC (`scripts/collect_evidence.py`)
+- Commit: `5cf7617` · версия формул: `v1.5`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
@@ -14,7 +14,7 @@
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_risk_filter.py
 ................                                                         [100%]
-16 passed in 0.40s
+16 passed in 0.30s
 [exit code 0]
 ```
 
