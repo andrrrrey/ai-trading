@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 # Пороги классификации состояния источника (ТЗ 5.1).
 UNAVAILABLE_AFTER_ERRORS = 3  # подряд ошибок → unavailable
 SLOW_LATENCY_MS = 5000.0  # ответ медленнее → degraded
-STALE_AFTER_SECONDS = 1800  # нет успешного ответа дольше → данные устарели
+# Проверка старше — результат устарел (ok → unknown; ошибка → unavailable).
+# Фоновый probe по умолчанию раз в 600 с, поэтому при работающем probe не наступает.
+STALE_AFTER_SECONDS = 1800
 
 
 class SourceState(BaseModel):
@@ -53,6 +55,8 @@ class SourceState(BaseModel):
     last_error: str | None = None
     # Класс текущей ошибки: timeout | network | rate_limit | auth | no_data …
     last_error_kind: str | None = None
+    # Последняя проверка старше STALE_AFTER_SECONDS: её результат устарел.
+    stale: bool = False
     # Последний сбой (сохраняется и после восстановления — для разбора инцидентов).
     last_failure_at: datetime | None = None
     last_failure_error: str | None = None
@@ -77,7 +81,13 @@ def classify(state: SourceState, now: datetime | None = None) -> SourceState:
     if state.status != "error":
         state.last_error = None
     state.last_error_kind = _error_kind(state.last_error)
+    state.stale = (
+        state.age_seconds is not None and state.age_seconds > STALE_AFTER_SECONDS
+    )
     if state.last_checked_at is None:
+        state.state = "unknown"
+    elif state.status == "ok" and state.stale:
+        # Успех был, но давно: текущее состояние источника неизвестно.
         state.state = "unknown"
     elif state.status == "error":
         stale = state.success_age_seconds is None or state.success_age_seconds > STALE_AFTER_SECONDS

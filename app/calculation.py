@@ -136,7 +136,10 @@ def assess_data_quality(
         reduced.append(_detail(data_issues, "SEC EDGAR", "SEC EDGAR недоступен"))
 
     if not earnings_available:
-        reduced.append("дата отчётности неизвестна — риск близкой отчётности не проверен")
+        reduced.append(
+            _detail(data_issues, "дата отчётности", "дата отчётности неизвестна")
+            + " — риск близкой отчётности не проверен"
+        )
 
     for name, value in factor_scores.items():
         if value is None:
@@ -205,6 +208,7 @@ def calculate(
             news_sentiment=catalysts.sentiment,
             missing_reasons=quality.reasons,
             today=calc_date,
+            config=config.risk_filter,
         )
         return CalculationResult(
             features=features,
@@ -232,6 +236,7 @@ def calculate(
         news_sentiment=catalysts.sentiment,
         missing_factors=missing,
         today=calc_date,
+        config=config.risk_filter,
     )
     return CalculationResult(
         features=features,
@@ -299,6 +304,7 @@ def build_raw_inputs(
     profile: CompanyProfile | None = None,
     warnings: list[str] | None = None,
     quality: dict | None = None,
+    earnings_api_available: bool = True,
 ) -> dict:
     """JSON-снимок всех исходных данных расчёта (сохраняется в историю)."""
     return {
@@ -316,7 +322,9 @@ def build_raw_inputs(
             "next_earnings_date": (
                 next_earnings_date.isoformat() if next_earnings_date else None
             ),
+            # available — известна будущая дата; api_available — API ответил
             "available": earnings_available,
+            "api_available": earnings_api_available,
         },
         "news": [item.model_dump(mode="json") for item in news],
         "filings": [item.model_dump(mode="json") for item in filings],

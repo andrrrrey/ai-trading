@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -74,6 +75,10 @@ class FundamentalsSnapshot(Base):
     __tablename__ = "fundamentals_snapshot"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Расчёт, для которого сделан снимок (миграция 0002).
+    signal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("signals.id", ondelete="CASCADE"), index=True
+    )
     ticker: Mapped[str] = mapped_column(String(16), index=True)
     as_of_date: Mapped[date] = mapped_column(Date)
     revenue_growth: Mapped[float | None] = mapped_column(Float)
@@ -92,6 +97,10 @@ class MarketContext(Base):
     __tablename__ = "market_context"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Расчёт, для которого зафиксирован контекст (миграция 0002).
+    signal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("signals.id", ondelete="CASCADE"), index=True
+    )
     ticker: Mapped[str] = mapped_column(String(16), index=True)
     as_of_date: Mapped[date] = mapped_column(Date)
     next_earnings_date: Mapped[date | None] = mapped_column(Date)
@@ -177,7 +186,8 @@ class TelegramUser(Base):
 
     __tablename__ = "telegram_users"
 
-    chat_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    # Telegram ID превышает int4 (> 2^31) — BigInteger (миграция 0002).
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     username: Mapped[str | None] = mapped_column(String(255))
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

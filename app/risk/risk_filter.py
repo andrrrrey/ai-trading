@@ -23,19 +23,12 @@ from pydantic import BaseModel, ConfigDict
 
 from app.features.indicators import FeatureSet
 from app.ingestion.schemas import Fundamentals
-from app.scoring.thresholds import DEFAULT_THRESHOLDS_PATH
+from app.scoring.thresholds import DEFAULT_THRESHOLDS_PATH, RiskFilterConfig
 from app.status import TradeStatus, min_status
 
 logger = logging.getLogger(__name__)
 
 
-class RiskFilterConfig(BaseModel):
-    high_volatility_atr_ratio: float = 0.05
-    event_risk_days: int = 3
-    gap_risk_pct: float = 5.0
-    overextension_ema20_pct: float = 15.0
-    liquidity_min_avg_volume: float = 500_000
-    news_risk_sentiment: float = -0.3
 
 
 def load_risk_config(path: str | Path | None = None) -> RiskFilterConfig:

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TypeVar
 
 from app.ingestion.alpaca_client import AlpacaClient
@@ -76,6 +78,24 @@ def source_mode(data_kind: str, source: str | None) -> str:
     if not source:
         return "unavailable"
     return "primary" if PRIMARY_SOURCES.get(data_kind) == source else "reserve"
+
+
+@dataclass(frozen=True)
+class Feed:
+    """Набор новостей / filings с фактически ответившим источником и временем ответа.
+
+    Нужен, чтобы и для пустого ответа было видно, кто ответил и когда (а не
+    только «нет данных»).
+    """
+
+    items: list
+    source: str
+    fetched_at: datetime
+
+
+async def _feed(coro: Awaitable[list], source: str) -> Feed:
+    items = await coro
+    return Feed(items=items, source=source, fetched_at=datetime.now(UTC))
 
 
 class AllSourcesUnavailableError(SourceError):
@@ -188,6 +208,22 @@ class SourceRouter:
             fallback=fallback,
             fallback_name="finnhub" if fallback else None,
         )
+
+    async def get_news_feed(self, ticker: str) -> Feed:
+        """Новости с указанием ответившего источника: FMP → Finnhub."""
+        fallback = None
+        if self._finnhub is not None:
+            fallback = lambda: _feed(self._finnhub.get_company_news(ticker), "finnhub")  # noqa: E731
+        return await self._with_fallback(
+            what=f"news[{ticker}]",
+            primary=lambda: _feed(self._fmp.get_news(ticker), "fmp"),
+            primary_name="fmp",
+            fallback=fallback,
+            fallback_name="finnhub" if fallback else None,
+        )
+
+    async def get_filings_feed(self, ticker: str) -> Feed:
+        return await _feed(self.get_filings(ticker), "sec_edgar")
 
     async def get_quote(self, ticker: str) -> Quote:
         """Текущая котировка: FMP → Alpaca (последняя сделка)."""

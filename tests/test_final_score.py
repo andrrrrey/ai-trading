@@ -125,7 +125,9 @@ def test_active_formula_version_snapshot():
     assert fv.is_active is True
     assert fv.final_score_weights["momentum"] == 0.20
     snap = fv.snapshot()
-    assert set(snap) == {"version", "final_score_weights", "factor_params", "data_quality"}
+    assert set(snap) == {
+        "version", "final_score_weights", "factor_params", "data_quality", "risk_filter"
+    }
 
 
 def test_weights_must_sum_to_one():

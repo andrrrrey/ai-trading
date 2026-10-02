@@ -16,7 +16,11 @@ import logging
 from datetime import datetime
 
 from app.calculation import build_raw_inputs, calculate
-from app.db.repository import save_signal, upsert_active_formula_version
+from app.db.repository import (
+    save_calculation_context,
+    save_signal,
+    upsert_active_formula_version,
+)
 from app.ingestion.base_client import SourceError
 from app.ingestion.normalization import KEY_FUNDAMENTAL_FIELDS, NEW_YORK
 from app.ingestion.source_router import aggregate_mode, source_mode
@@ -53,14 +57,30 @@ def _source_entry(
     }
 
 
-def _feed_entry(data_kind: str, sources: list[str], *, available: bool) -> dict:
-    """Новости / SEC filings: список фактических источников и режим набора."""
+def _feed_entry(
+    data_kind: str,
+    sources: list[str],
+    *,
+    available: bool,
+    source: str | None,
+    fetched_at: datetime | None,
+) -> dict:
+    """Новости / SEC filings: ответивший источник, время ответа и режим набора.
+
+    ``source`` — источник, который фактически ответил (и при пустом ответе);
+    ``sources`` — источники элементов, вошедших в набор.
+    """
     entry = _source_entry(
-        data_kind, sources[0] if sources else data_kind, None,
-        available=available, has_data=bool(sources),
+        data_kind,
+        source or (sources[0] if sources else None),
+        fetched_at,
+        available=available,
+        has_data=bool(sources),
     )
     entry["sources"] = sources
-    if sources and any(source_mode(data_kind, s) == "reserve" for s in sources):
+    if entry["mode"] == "primary" and any(
+        source_mode(data_kind, s) == "reserve" for s in [entry["source"], *sources] if s
+    ):
         entry["mode"] = "reserve"
     return entry
 
@@ -87,8 +107,10 @@ class Pipeline:
         # Дата расчёта фиксируется в торговой зоне и сохраняется: от неё зависит
         # event_risk, и повтор расчёта по истории использует ту же дату.
         calc_date = datetime.now(NEW_YORK).date()
-        earnings_q = market.quality.get("earnings")
-        earnings_available = not (earnings_q and earnings_q.is_incomplete)
+        # «Дата отчётности доступна» = известна будущая дата: только тогда риск
+        # близкой отчётности действительно проверен. Доступность самого API
+        # хранится отдельно (earnings_api_available).
+        earnings_available = market.earnings.next_earnings_date is not None
         inputs = dict(
             price_history=market.price_history,
             benchmark=benchmark,
@@ -108,6 +130,7 @@ class Pipeline:
             quote=market.quote,
             profile=market.profile,
             warnings=market.warnings,
+            earnings_api_available=market.earnings_api_available,
             quality={name: q.model_dump(mode="json") for name, q in market.quality.items()},
         )
         features, final, risk = result.features, result.final, result.risk
@@ -130,7 +153,8 @@ class Pipeline:
                 "earnings",
                 market.earnings.source,
                 market.earnings.fetched_at,
-                available=earnings_available,
+                available=market.earnings_api_available,
+                has_data=earnings_available,
             ),
             "benchmark": _source_entry(
                 "price_history",
@@ -142,11 +166,15 @@ class Pipeline:
                 "news",
                 sorted({item.source for item in market.news}),
                 available=market.news_available,
+                source=market.news_source,
+                fetched_at=market.news_fetched_at,
             ),
             "filings": _feed_entry(
                 "filings",
                 sorted({item.source for item in market.filings}),
                 available=market.filings_available,
+                source=market.filings_source,
+                fetched_at=market.filings_fetched_at,
             ),
             "quote": _source_entry(
                 "quote",
@@ -189,4 +217,20 @@ class Pipeline:
                 final.final_score,
                 source_context["mode"],
             )
+            try:
+                await save_calculation_context(
+                    session,
+                    signal=signal,
+                    calc_date=calc_date,
+                    fundamentals=market.fundamentals,
+                    features=features,
+                    risk=risk,
+                    next_earnings_date=market.earnings.next_earnings_date,
+                    news_sentiment=result.catalysts.sentiment,
+                    profile=market.profile,
+                    price_histories=[h for h in (market.price_history, benchmark) if h],
+                )
+            except Exception:  # noqa: BLE001 — сигнал уже сохранён целиком в snapshot
+                await session.rollback()
+                logger.exception("не удалось заполнить профильные таблицы для signal %s", signal.id)
             return signal.id

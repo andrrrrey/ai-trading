@@ -159,3 +159,58 @@ async def test_get_news_skips_untitled():
     assert len(news) == 1
     assert news[0].title == "Good quarter"
     assert news[0].source == "fmp"
+
+
+@respx.mock
+async def test_zero_fundamentals_are_data_not_missing():
+    """0 — корректное финансовое значение и не должно превращаться в None."""
+    client = FMPClient(api_key="KEY", health_recorder=FakeHealthRecorder())
+    zero_ratios = {
+        "netIncomePerShare": 0,
+        "grossProfitMargin": 0.0,
+        "debtToEquityRatio": 0,
+        "priceToEarningsRatio": 0.0,
+        # устаревшие имена с ненулевыми значениями не должны «перебить» ноль
+        "eps": 9.9,
+        "priceEarningsRatio": 99.0,
+    }
+    respx.get(re.compile(r".*/stable/ratios")).mock(
+        return_value=httpx.Response(200, json=[zero_ratios])
+    )
+    respx.get(re.compile(r".*/stable/key-metrics")).mock(
+        return_value=httpx.Response(200, json=[{"eps": 7.0, "debtToEquity": 3.0}])
+    )
+    respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
+        return_value=httpx.Response(200, json=[{"growthRevenue": 0, "growthEPS": 0.0}])
+    )
+    respx.get(re.compile(r".*/stable/profile")).mock(
+        return_value=httpx.Response(200, json=[{"companyName": "Zero Inc", "marketCap": 0}])
+    )
+
+    f = await client.get_fundamentals("ZERO")
+    profile = await client.get_profile("ZERO")
+    await client.aclose()
+
+    assert (f.eps, f.gross_margin, f.debt_equity, f.pe) == (0.0, 0.0, 0.0, 0.0)
+    assert (f.revenue_growth, f.eps_growth) == (0.0, 0.0)
+    assert profile.market_cap == 0.0
+
+
+@respx.mock
+async def test_missing_and_empty_values_fall_back_to_alternative_fields():
+    client = FMPClient(api_key="KEY", health_recorder=FakeHealthRecorder())
+    respx.get(re.compile(r".*/stable/ratios")).mock(
+        return_value=httpx.Response(
+            200, json=[{"netIncomePerShare": "", "grossProfitMargin": None}]
+        )
+    )
+    respx.get(re.compile(r".*/stable/key-metrics")).mock(
+        return_value=httpx.Response(200, json=[{"eps": 5.5, "grossProfitMargin": 0.3}])
+    )
+    respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
+        return_value=httpx.Response(200, json=[{}])
+    )
+    f = await client.get_fundamentals("ALT")
+    await client.aclose()
+    assert f.eps == 5.5 and f.gross_margin == 0.3
+    assert f.debt_equity is None and f.pe is None

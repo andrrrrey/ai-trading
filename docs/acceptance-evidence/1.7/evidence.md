@@ -1,19 +1,20 @@
 # Подэтап 1.7 — База данных и история
 
-- Сформировано: 2026-10-01 12:57 UTC (`scripts/collect_evidence.py`)
-- Commit: `44a6e6a` · версия формул: `v1.3`
+- Сформировано: 2026-10-01 20:58 UTC (`scripts/collect_evidence.py`)
+- Commit: `793d52c` · версия формул: `v1.4`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
+- профильные таблицы: tickers, price_history, fundamentals_snapshot, market_context (со ссылкой на signal_id), telegram_users
 - 1–7: тикер, время, исходные данные (raw_inputs), метрики, 7 факторов, Final Score, флаги, источники и версия формул
 - 8: два расчёта = две записи (append-only)
-- 9: восстановление цепочки — scripts/replay_signal.py
+- 9: восстановление цепочки — scripts/replay_signal.py (параметры и пороги Risk Filter берутся из сохранённой версии формул)
 
 ## Автотесты подэтапа
 ```
-$ python -m pytest -q -p no:cacheprovider tests/test_db.py tests/test_migrations.py
-......                                                                   [100%]
-6 passed in 0.92s
+$ python -m pytest -q -p no:cacheprovider tests/test_db.py tests/test_migrations.py tests/test_e2e_stage1.py::test_profile_tables_are_filled tests/test_e2e_stage1.py::test_replay_uses_stored_risk_thresholds
+........                                                                 [100%]
+8 passed in 2.00s
 [exit code 0]
 ```
 

@@ -112,14 +112,28 @@ class DataQualityConfig(BaseModel):
     fundamentals_missing_critical: int = 3
 
 
+class RiskFilterConfig(BaseModel):
+    """Пороги Risk Filter — часть версии формул (сохраняются с каждым расчётом)."""
+
+    high_volatility_atr_ratio: float = 0.05
+    event_risk_days: int = 3
+    gap_risk_pct: float = 5.0
+    overextension_ema20_pct: float = 15.0
+    liquidity_min_avg_volume: float = 500_000
+    news_risk_sentiment: float = -0.3
+
+
 class ScoringConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    version: str = "v1.3"
+    version: str = "v1.4"
     final_score_weights: FinalScoreWeights = FinalScoreWeights()
     factor_scores: FactorScoresConfig = FactorScoresConfig()
     # None — версии формул до v1.2 (без уровней неполноты), для воспроизведения.
     data_quality: DataQualityConfig | None = DataQualityConfig()
+    # Пороги Risk Filter этой версии формул. В записях до v1.4 они не сохранялись;
+    # тогда при повторе берутся значения по умолчанию (= пороги v1.0–v1.3).
+    risk_filter: RiskFilterConfig = RiskFilterConfig()
 
 
 def load_scoring_config(path: str | Path | None = None) -> ScoringConfig:

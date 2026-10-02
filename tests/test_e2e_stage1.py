@@ -624,3 +624,123 @@ async def test_alpaca_fallback_uses_split_adjusted_prices(session_factory):
     assert features["atr_pct"] < 0.05
     flags = [f["flag"] for f in signal.risk_flags]
     assert "high_volatility" not in flags and "gap_risk" not in flags
+
+
+# --------------------------------------------------------------------------- #
+# Ревью aae5c40: Risk Filter по версии, неизвестная дата отчётности, пустые наборы
+# --------------------------------------------------------------------------- #
+@respx.mock
+async def test_replay_uses_stored_risk_thresholds(session_factory, monkeypatch):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    service = build_service(session_factory, SourceHealthMonitor())
+    await service.analyze("AAPL")
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    stored = signal.raw_input_snapshot["calculation"]["formula_config"]["risk_filter"]
+    assert stored["high_volatility_atr_ratio"] == 0.05
+    assert "high_volatility" not in [f["flag"] for f in signal.risk_flags]
+
+    # «Новая версия» с жёстким порогом ATR: текущая конфигурация изменилась
+    from app.risk import risk_filter
+    from app.scoring import thresholds
+    from app.scoring.thresholds import RiskFilterConfig
+
+    strict = RiskFilterConfig(high_volatility_atr_ratio=0.0001)
+    monkeypatch.setattr(risk_filter, "load_risk_config", lambda path=None: strict)
+    original = thresholds.load_scoring_config
+    monkeypatch.setattr(
+        thresholds,
+        "load_scoring_config",
+        lambda path=None: original(path).model_copy(update={"risk_filter": strict}),
+    )
+    # при текущих порогах тот же набор метрик дал бы флаг…
+    from app.features.indicators import FeatureSet
+
+    features = FeatureSet.model_validate(signal.raw_input_snapshot["features"])
+    assert "high_volatility" in risk_filter.compute_risk(features).flag_names()
+    # …но повтор старого сигнала идёт по его сохранённым порогам
+    replay = replay_signal(signal)
+    assert replay.risk.flag_names() == [f["flag"] for f in signal.risk_flags]
+
+
+@respx.mock
+async def test_unknown_earnings_date_reduces_confidence(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    # API ответил, но только прошедшие даты — будущей даты отчётности нет
+    respx.get(FMP_EARNINGS).mock(
+        return_value=httpx.Response(200, json=[{"date": "2020-01-30"}])
+    )
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    text, _ = await service.analyze("AAPL")
+
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    snap = signal.raw_input_snapshot
+    assert snap["raw_inputs"]["earnings"] == {
+        "next_earnings_date": None, "available": False, "api_available": True
+    }
+    assert snap["data_quality"]["confidence"] == "reduced"
+    assert any("не вернул будущую дату" in r for r in snap["data_quality"]["reduced"])
+    assert snap["sources"]["earnings"]["mode"] == "no_data"
+    assert snap["sources"]["earnings"]["source"] == "fmp"
+    assert "missing_data" in [f["flag"] for f in signal.risk_flags]
+    assert "достоверность: пониженная" in text
+
+
+@respx.mock
+async def test_empty_feeds_keep_real_source_and_time(session_factory):
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(FMP_NEWS).mock(return_value=httpx.Response(200, json=[]))
+    _mock_sec([("4", "2026-09-01", "")])  # только формы вне списка → пустой набор
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    await service.analyze("AAPL")
+
+    async with session_factory() as s:
+        sources = (await list_signals(s, "AAPL"))[0].raw_input_snapshot["sources"]
+    assert sources["news"]["source"] == "fmp" and sources["news"]["sources"] == []
+    assert sources["news"]["mode"] == "no_data" and sources["news"]["fetched_at"]
+    assert sources["filings"]["source"] == "sec_edgar"
+    assert sources["filings"]["mode"] == "no_data" and sources["filings"]["fetched_at"]
+
+
+@respx.mock
+async def test_profile_tables_are_filled(session_factory):
+    from app.db.models import (
+        FundamentalsSnapshot,
+        MarketContext,
+        PriceHistory,
+        TelegramUser,
+        Ticker,
+    )
+
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    service = build_service(session_factory, SourceHealthMonitor())
+    _, sid1 = await service.analyze("AAPL")
+    _, sid2 = await service.analyze("AAPL")  # повтор: бары не дублируются
+    await service.touch_user(7_000_000_001, "tester")  # ID > 2^31
+    await service.touch_user(7_000_000_001, "tester2")
+
+    async with session_factory() as s:
+        ticker = await s.get(Ticker, "AAPL")
+        bars = await s.scalar(
+            select(func.count()).select_from(PriceHistory).where(PriceHistory.ticker == "AAPL")
+        )
+        spy_bars = await s.scalar(
+            select(func.count()).select_from(PriceHistory).where(PriceHistory.ticker == "SPY")
+        )
+        fund = (await s.execute(select(FundamentalsSnapshot))).scalars().all()
+        ctx = (await s.execute(select(MarketContext))).scalars().all()
+        user = await s.get(TelegramUser, 7_000_000_001)
+    assert ticker.name == "Apple Inc." and ticker.exchange == "NASDAQ"
+    assert bars == 260 and spy_bars == 260
+    assert [f.signal_id for f in fund] == [sid1, sid2] and fund[0].pe == 28.0
+    assert [c.signal_id for c in ctx] == [sid1, sid2]
+    assert ctx[0].next_earnings_date == date(2099, 1, 15)
+    assert ctx[0].avg_volume_20d is not None
+    assert user.username == "tester2"
