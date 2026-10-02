@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -30,24 +31,31 @@ DISCLAIMER = "⚠️ Не является индивидуальной инве
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 
+# Токены Telegram HTML: тег, сущность (&amp; &#39; &#x27;), текст, одиночные < и &.
+_HTML_TOKEN_RE = re.compile(r"<[^<>]*>|&(?:#\d+|#x[0-9a-fA-F]+|[A-Za-z]\w*);|[^<&]+|[<&]")
+_TAG_NAME_RE = re.compile(r"</?\s*([A-Za-z][\w-]*)")
+
+
 def split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     """Делит текст на части не длиннее ``limit`` по границам строк.
 
     HTML-теги в шаблонах открываются и закрываются в пределах одной строки,
     поэтому разбиение по строкам не ломает разметку. Строка длиннее лимита
-    режется по символам (на практике — только длинный заголовок новости).
+    (на практике — только очень длинный внешний текст) делится
+    ``_split_long_line``: без разрыва тегов и HTML-сущностей, с закрытием и
+    повторным открытием тегов на границе частей.
     """
     if len(text) <= limit:
         return [text]
     chunks: list[str] = []
     current = ""
     for line in text.split("\n"):
-        while len(line) > limit:
+        if len(line) > limit:
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.append(line[:limit])
-            line = line[limit:]
+            chunks.extend(_split_long_line(line, limit))
+            continue
         candidate = f"{current}\n{line}" if current else line
         if len(candidate) > limit:
             chunks.append(current)
@@ -57,6 +65,81 @@ def split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def _split_long_line(line: str, limit: int) -> list[str]:
+    """Делит одну строку Telegram HTML на части не длиннее ``limit``.
+
+    Теги и сущности (``&amp;``) не разрываются. Если на границе части открыт
+    тег (``<b>``, ``<a href=…>``), он закрывается в конце части и открывается
+    снова в начале следующей, поэтому каждая часть — корректная разметка.
+    Текст по возможности режется по пробелу.
+    """
+    chunks: list[str] = []
+    open_tags: list[tuple[str, str]] = []  # (имя, исходный открывающий тег)
+    current = ""
+
+    def closing(tags: list[tuple[str, str]]) -> str:
+        return "".join(f"</{name}>" for name, _ in reversed(tags))
+
+    def reopened() -> str:
+        return "".join(tag for _, tag in open_tags)
+
+    def flush() -> None:
+        nonlocal current
+        chunks.append(current + closing(open_tags))
+        current = reopened()
+
+    for token in _HTML_TOKEN_RE.findall(line):
+        if len(token) > 1 and token.startswith("<") and token.endswith(">"):
+            match = _TAG_NAME_RE.match(token)
+            after = list(open_tags)
+            if match is not None:
+                name = match.group(1).lower()
+                if token.startswith("</"):
+                    for index in range(len(after) - 1, -1, -1):
+                        if after[index][0] == name:
+                            del after[index]
+                            break
+                else:
+                    after.append((name, token))
+            if len(current) + len(token) + len(closing(after)) > limit and current != reopened():
+                flush()
+            current += token
+            open_tags[:] = after
+            continue
+
+        is_entity = len(token) > 1 and token.startswith("&")
+        rest = token
+        while rest:
+            room = limit - len(current) - len(closing(open_tags))
+            if len(rest) <= room:
+                current += rest
+                break
+            has_content = current != reopened()
+            if is_entity:
+                if has_content:  # сущность целиком переносится в следующую часть
+                    flush()
+                    continue
+                cut = len(rest)
+            else:
+                space = rest.rfind(" ", 0, room) if room > 0 else -1
+                if space >= 0:
+                    cut = space + 1  # пробел остаётся в конце части
+                elif has_content:
+                    flush()  # слово не помещается — переносим его в новую часть
+                    continue
+                else:
+                    cut = max(room, 1)  # слово длиннее части: режем по символам
+            current += rest[:cut]
+            rest = rest[cut:]
+            if rest:
+                flush()
+
+    if current and current != reopened():
+        chunks.append(current + closing(open_tags))
+    return chunks
+
 
 _FACTOR_TITLES = {
     "momentum": "Momentum",

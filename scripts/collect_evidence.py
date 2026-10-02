@@ -191,7 +191,11 @@ STAGES: dict[str, dict] = {
     },
     "1.10": {
         "title": "Сквозная контрольная проверка",
-        "tests": ["tests/test_e2e_stage1.py", "tests/test_v15_fixes.py"],
+        "tests": [
+            "tests/test_e2e_stage1.py",
+            "tests/test_v15_fixes.py",
+            "tests/test_acceptance_followups.py",
+        ],
         "checks": [
             "1: тикер проходит всю цепочку до Telegram (live smoke ниже)",
             "2–4: backend = история = Telegram; повтор на сохранённых данных совпадает",

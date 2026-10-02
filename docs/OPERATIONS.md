@@ -10,7 +10,7 @@
 |---|---|---|---|
 | `postgres` | PostgreSQL 15, том `pgdata` | `pg_isready` | unless-stopped |
 | `migrate` | `alembic upgrade head` перед стартом app и бота | — | одноразовый |
-| `app` | FastAPI `/health` и фоновый probe источников; порт `127.0.0.1:8000` | `GET /health` раз в 30 с | unless-stopped |
+| `app` | FastAPI `/health`, `/ready` и фоновый probe источников; порт `127.0.0.1:8000` | `GET /ready` раз в 30 с: HTTP 503, если PostgreSQL не отвечает | unless-stopped |
 | `bot` | Telegram-бот (long polling; при старте снимает webhook, если он был установлен для этого токена) | heartbeat-файл: обновляется раз в минуту, если Telegram API отвечает; контейнер unhealthy, если файл старше 3 минут | unless-stopped |
 
 - База наружу не публикуется, API доступен только с самого сервера (или через
@@ -51,6 +51,7 @@ docker compose exec app python scripts/stage1_acceptance_smoke.py AAPL
 | Что смотреть | Команда |
 |---|---|
 | Состояние контейнеров и healthcheck | `docker compose ps` |
+| Готовность (связь с БД) | `curl -s -w ' %{http_code}\n' http://127.0.0.1:8000/ready` |
 | Источники данных, режим, ошибки | `curl -s http://127.0.0.1:8000/health` |
 | Логи бота / API (с ротацией) | `docker compose logs --tail=200 -f bot` |
 | История проверок источников | `docker compose exec postgres psql -U switch -d switch_trading -c "select source,status,last_error,checked_at from source_health order by id desc limit 20"` |

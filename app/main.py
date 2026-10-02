@@ -14,7 +14,8 @@ import contextlib
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from sqlalchemy import text
 
 from app import __version__
 from app.config import get_settings
@@ -66,6 +67,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="switch-trading-mvp", version=__version__, lifespan=lifespan)
+
+# Предел ожидания ответа БД в /ready, сек.
+READY_DB_TIMEOUT_SECONDS = 5.0
+
+
+@app.get("/ready")
+async def ready(response: Response) -> dict:
+    """Готовность к работе: PostgreSQL отвечает на ``SELECT 1``.
+
+    В отличие от /health (liveness: процесс жив, всегда HTTP 200) возвращает
+    HTTP 503, если БД недоступна. По нему Docker Compose определяет healthy.
+    """
+    engine = getattr(app.state, "db_engine", None)
+    try:
+        if engine is None:
+            raise RuntimeError("подключение к БД не инициализировано")
+        async with asyncio.timeout(READY_DB_TIMEOUT_SECONDS):
+            async with engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001 — любая ошибка БД = «не готов»
+        logging.warning("ready: БД недоступна: %r", exc)
+        response.status_code = 503
+        return {"status": "unavailable", "database": "error", "error": type(exc).__name__}
+    return {"status": "ok", "database": "ok"}
 
 
 @app.get("/health")

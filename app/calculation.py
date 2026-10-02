@@ -114,14 +114,24 @@ def assess_data_quality(
 
     bars = len(price_history.bars)
     max_age = cfg.max_last_bar_age_business_days
-    if max_age is not None and calc_date is not None and price_history.bars:
-        last_date = price_history.bars[-1].date
-        age = business_days_between(last_date, calc_date)
-        if age > max_age:
-            critical.append(
-                f"история цен устарела: последний бар {last_date.isoformat()} — "
-                f"{age} раб. дн. до даты расчёта (допустимо {max_age})"
-            )
+    if max_age is not None and calc_date is not None:
+        # Одинаковое требование к тикеру и к бенчмарку: по устаревшему SPY
+        # Relative Strength считался бы за старое окно (при выравнивании по датам
+        # общие даты заканчиваются на последнем баре SPY).
+        checks = (
+            ("история цен устарела", price_history, ""),
+            ("история бенчмарка SPY устарела", benchmark, " — Relative Strength не рассчитать"),
+        )
+        for title, history, consequence in checks:
+            if history is None or not history.bars:
+                continue  # отсутствие истории проверяется ниже отдельно
+            last_date = history.bars[-1].date
+            age = business_days_between(last_date, calc_date)
+            if age > max_age:
+                critical.append(
+                    f"{title}: последний бар {last_date.isoformat()} — {age} раб. дн. "
+                    f"до даты расчёта (допустимо {max_age}){consequence}"
+                )
     if cfg.check_actively_trading and actively_trading is False:
         critical.append("по данным профиля эмитента бумага не торгуется")
     if price_history.volume_partial:

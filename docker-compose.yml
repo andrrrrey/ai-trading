@@ -54,7 +54,8 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+        # /ready: HTTP 503, если PostgreSQL не отвечает (/health — только liveness)
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=8)"
       interval: 30s
       timeout: 10s
       retries: 3

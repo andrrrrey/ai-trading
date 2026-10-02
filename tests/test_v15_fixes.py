@@ -351,7 +351,7 @@ def _assess(cfg: DataQualityConfig, history: PriceHistory, **kw):
     return assess_data_quality(
         cfg=cfg,
         price_history=history,
-        benchmark=history,
+        benchmark=kw.pop("benchmark", history),
         fundamentals=FUND,
         features=FeatureSet(ticker="X", price=10.0, avg_volume_20d=1_000_000),
         factor_scores=dict.fromkeys(
