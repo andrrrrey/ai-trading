@@ -214,3 +214,30 @@ async def test_missing_and_empty_values_fall_back_to_alternative_fields():
     await client.aclose()
     assert f.eps == 5.5 and f.gross_margin == 0.3
     assert f.debt_equity is None and f.pe is None
+
+
+@respx.mock
+async def test_fundamentals_requests_are_independent():
+    import pytest
+
+    from app.ingestion.base_client import SourceError
+
+    client = FMPClient(api_key="KEY", max_retries=1, health_recorder=FakeHealthRecorder())
+    respx.get(re.compile(r".*/stable/ratios")).mock(
+        return_value=httpx.Response(200, json=[{"priceToEarningsRatio": 20.0}])
+    )
+    respx.get(re.compile(r".*/stable/key-metrics")).mock(return_value=httpx.Response(503))
+    respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
+        return_value=httpx.Response(200, json=[{"growthRevenue": 0.1}])
+    )
+    f = await client.get_fundamentals("PART")
+    assert f.pe == 20.0 and f.revenue_growth == 0.1
+    assert f.unavailable_parts == ["key-metrics (fmp: http_error)"]
+
+    respx.get(re.compile(r".*/stable/ratios")).mock(return_value=httpx.Response(503))
+    respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
+        return_value=httpx.Response(503)
+    )
+    with pytest.raises(SourceError):  # не ответил ни один запрос — отчётности нет
+        await client.get_fundamentals("NONE")
+    await client.aclose()

@@ -48,6 +48,10 @@ from app.scoring.formula_versions import FormulaVersion
 from app.status import TradeStatus
 
 
+class StorageError(RuntimeError):
+    """Расчёт не удалось сохранить: транзакция отменена, ничего не записано."""
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -69,6 +73,7 @@ async def save_signal(
     raw_inputs: dict | None = None,
     data_quality: dict | None = None,
     timestamp: datetime | None = None,
+    commit: bool = True,
 ) -> Signal:
     """Сохраняет один сигнал (append-only) с полным снимком входных данных."""
     snapshot = {
@@ -102,8 +107,11 @@ async def save_signal(
         factor_scores=FactorScoresRow(**final.factor_scores),
     )
     session.add(signal)
-    await session.commit()
-    await session.refresh(signal)
+    if commit:
+        await session.commit()
+        await session.refresh(signal)
+    else:
+        await session.flush()  # signal.id нужен связанным записям той же транзакции
     return signal
 
 
@@ -261,6 +269,7 @@ async def save_calculation_context(
     news_sentiment: float | None,
     profile: CompanyProfile | None,
     price_histories: list[PriceHistory],
+    commit: bool = True,
 ) -> None:
     """Раскладывает данные расчёта по профильным таблицам схемы (ТЗ раздел 5).
 
@@ -300,7 +309,8 @@ async def save_calculation_context(
             negative_news_flag="news_risk" in risk.flag_names(),
         )
     )
-    await session.commit()
+    if commit:
+        await session.commit()
 
 
 async def touch_telegram_user(session: AsyncSession, chat_id: int, username: str | None) -> None:
@@ -317,7 +327,9 @@ async def touch_telegram_user(session: AsyncSession, chat_id: int, username: str
     await session.commit()
 
 
-async def upsert_active_formula_version(session: AsyncSession, version: FormulaVersion) -> None:
+async def upsert_active_formula_version(
+    session: AsyncSession, version: FormulaVersion, *, commit: bool = True
+) -> None:
     """Делает версию активной (ровно одна is_active), сохраняя веса/пороги."""
     await session.execute(update(FormulaVersionRow).values(is_active=False))
     values = {
@@ -354,4 +366,5 @@ async def upsert_active_formula_version(session: AsyncSession, version: FormulaV
     else:
         stmt = insert(FormulaVersionRow).values(**values)
     await session.execute(stmt)
-    await session.commit()
+    if commit:
+        await session.commit()

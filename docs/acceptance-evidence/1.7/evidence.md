@@ -1,7 +1,7 @@
 # Подэтап 1.7 — База данных и история
 
-- Сформировано: 2026-10-01 20:58 UTC (`scripts/collect_evidence.py`)
-- Commit: `793d52c` · версия формул: `v1.4`
+- Сформировано: 2026-10-02 04:39 UTC (`scripts/collect_evidence.py`)
+- Commit: `34660c1` · версия формул: `v1.4`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
@@ -14,7 +14,7 @@
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_db.py tests/test_migrations.py tests/test_e2e_stage1.py::test_profile_tables_are_filled tests/test_e2e_stage1.py::test_replay_uses_stored_risk_thresholds
 ........                                                                 [100%]
-8 passed in 2.00s
+8 passed in 2.01s
 [exit code 0]
 ```
 

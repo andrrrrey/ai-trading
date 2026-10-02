@@ -120,13 +120,24 @@ def assess_data_quality(
         critical.append("нет ключевых метрик: " + ", ".join(missing_metrics))
 
     missing_fund = [f for f in KEY_FUNDAMENTAL_FIELDS if getattr(fundamentals, f) is None]
+    failed_parts = (
+        " (недоступны запросы: " + ", ".join(fundamentals.unavailable_parts) + ")"
+        if fundamentals.unavailable_parts
+        else ""
+    )
     if len(missing_fund) >= cfg.fundamentals_missing_critical:
         critical.append(
             f"нет {len(missing_fund)} из {len(KEY_FUNDAMENTAL_FIELDS)} ключевых "
-            "fundamentals: " + ", ".join(missing_fund)
+            "fundamentals: " + ", ".join(missing_fund) + failed_parts
         )
     elif missing_fund:
-        reduced.append("нет fundamentals: " + ", ".join(missing_fund))
+        reduced.append("нет fundamentals: " + ", ".join(missing_fund) + failed_parts)
+    elif fundamentals.unavailable_parts:
+        # ключевые показатели есть, но часть отчётности недоступна (напр. forward P/E
+        # из key-metrics — тогда Valuation считается по текущему P/E)
+        reduced.append(
+            "fundamentals: недоступны запросы " + ", ".join(fundamentals.unavailable_parts)
+        )
 
     if not news_available and not filings_available:
         critical.append("недоступны и новости, и SEC EDGAR — Catalysts не рассчитать")
