@@ -13,7 +13,8 @@ AI-объяснение подключаются на Этапе 2 (2.2, 2.3); �
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from app.calculation import build_raw_inputs, calculate
 from app.db.repository import (
@@ -23,7 +24,11 @@ from app.db.repository import (
     upsert_active_formula_version,
 )
 from app.ingestion.base_client import SourceError
-from app.ingestion.normalization import KEY_FUNDAMENTAL_FIELDS, NEW_YORK
+from app.ingestion.normalization import (
+    KEY_FUNDAMENTAL_FIELDS,
+    NEW_YORK,
+    drop_unfinished_session_bar,
+)
 from app.ingestion.source_router import aggregate_mode, source_mode
 from app.scoring import (
     ScoringConfig,
@@ -87,10 +92,18 @@ def _feed_entry(
 
 
 class Pipeline:
-    def __init__(self, ingestion, session_factory, config: ScoringConfig | None = None):
+    def __init__(
+        self,
+        ingestion,
+        session_factory,
+        config: ScoringConfig | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self._ingestion = ingestion
         self._session_factory = session_factory
         self._config = config or load_scoring_config()
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     async def run(self, ticker: str) -> int:
         """Прогоняет тикер по всей цепочке и сохраняет сигнал; возвращает signal_id."""
@@ -107,13 +120,25 @@ class Pipeline:
 
         # Дата расчёта фиксируется в торговой зоне и сохраняется: от неё зависит
         # event_risk, и повтор расчёта по истории использует ту же дату.
-        calc_date = datetime.now(NEW_YORK).date()
+        now = self._clock()
+        calc_date = now.astimezone(NEW_YORK).date()
+
+        # Незавершённый бар текущей сессии не участвует в расчёте (неполный объём).
+        warnings = list(market.warnings)
+        price_history, dropped = drop_unfinished_session_bar(market.price_history, now)
+        if dropped is not None:
+            warnings.append(
+                f"бар текущей сессии {dropped.isoformat()} ещё не закрыт — индикаторы "
+                "рассчитаны по последнему завершённому дню"
+            )
+        if benchmark is not None:
+            benchmark, _ = drop_unfinished_session_bar(benchmark, now)
         # «Дата отчётности доступна» = известна будущая дата: только тогда риск
         # близкой отчётности действительно проверен. Доступность самого API
         # хранится отдельно (earnings_api_available).
         earnings_available = market.earnings.next_earnings_date is not None
         inputs = dict(
-            price_history=market.price_history,
+            price_history=price_history,
             benchmark=benchmark,
             fundamentals=market.fundamentals,
             next_earnings_date=market.earnings.next_earnings_date,
@@ -124,13 +149,14 @@ class Pipeline:
             news_available=market.news_available,
             filings_available=market.filings_available,
             data_issues=data_issues,
+            actively_trading=market.profile.is_actively_trading if market.profile else None,
         )
         result = calculate(**inputs, config=self._config)
         raw_inputs = build_raw_inputs(
-            **inputs,
+            **{k: v for k, v in inputs.items() if k != "actively_trading"},
             quote=market.quote,
             profile=market.profile,
-            warnings=market.warnings,
+            warnings=warnings,
             earnings_api_available=market.earnings_api_available,
             quality={name: q.model_dump(mode="json") for name, q in market.quality.items()},
         )
@@ -142,7 +168,7 @@ class Pipeline:
         fund = market.fundamentals
         source_context = {
             "price_history": _source_entry(
-                "price_history", market.price_history.source, market.price_history.fetched_at
+                "price_history", price_history.source, price_history.fetched_at
             ),
             "fundamentals": _source_entry(
                 "fundamentals",
@@ -228,7 +254,7 @@ class Pipeline:
                     next_earnings_date=market.earnings.next_earnings_date,
                     news_sentiment=result.catalysts.sentiment,
                     profile=market.profile,
-                    price_histories=[h for h in (market.price_history, benchmark) if h],
+                    price_histories=[h for h in (price_history, benchmark) if h],
                     commit=False,
                 )
                 signal_id = signal.id

@@ -60,11 +60,12 @@ FMP_API_KEY=<ключ FMP>                         # ОБЯЗАТЕЛЬНО
 SEC_USER_AGENT=switch-trading-mvp your-email@example.com
 ALPACA_API_KEY_ID=<Key ID из Alpaca>
 ALPACA_API_SECRET_KEY=<Secret из Alpaca>
+ALPACA_DATA_FEED=iex                           # iex — бесплатный (объёмы одной биржи), sip — платный
 FINNHUB_API_KEY=<ключ Finnhub>
 
 # --- Telegram ---
 TELEGRAM_BOT_TOKEN=<токен от @BotFather>       # ОБЯЗАТЕЛЬНО
-TELEGRAM_ALLOWED_IDS=12345,67890                # ОБЯЗАТЕЛЬНО: Telegram ID с доступом к боту
+TELEGRAM_ALLOWED_IDS=12345,67890                # ОБЯЗАТЕЛЬНО: Telegram ID через запятую (или один ID)
 TELEGRAM_ALLOW_PUBLIC=false                     # true — открыть бот всем (только осознанно)
 
 # --- LLM (Этап 2) ---

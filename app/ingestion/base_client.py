@@ -24,6 +24,16 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+# httpx на уровне INFO пишет полный URL запроса, включая query-параметр apikey
+# (FMP) — ключи не должны попадать в логи контейнеров.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# Потолок ожидания по заголовку Retry-After, сек: источник может попросить ждать
+# час (дневной лимит), а пользователь бота не должен ждать дольше разумного —
+# после исчерпания попыток router переключится на резерв либо бот сообщит о лимите.
+MAX_RETRY_AFTER_SECONDS = 30.0
+
 # HTTP-статусы, при которых имеет смысл повторить запрос.
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
@@ -190,7 +200,7 @@ class BaseSourceClient:
         def _wait(retry_state) -> float:
             exc = retry_state.outcome.exception() if retry_state.outcome else None
             if isinstance(exc, RetryableSourceError) and exc.retry_after is not None:
-                return exc.retry_after
+                return max(0.0, min(exc.retry_after, MAX_RETRY_AFTER_SECONDS))
             return exponential(retry_state)
 
         return _wait
@@ -300,5 +310,26 @@ class BaseSourceClient:
                 kind=ERROR_INVALID_RESPONSE,
             ) from exc
 
+        payload_error = self._payload_error(payload)
+        if payload_error is not None:
+            kind, message = payload_error
+            await self._health.record(
+                HealthRecord(self.source, "error", latency_ms, f"{kind}: {message}")
+            )
+            raise SourceError(
+                f"{self.source}: {message}",
+                source=self.source,
+                status_code=response.status_code,
+                kind=kind,
+            )
+
         await self._health.record(HealthRecord(self.source, "ok", latency_ms, None))
         return payload
+
+    def _payload_error(self, payload: Any) -> tuple[str, str] | None:
+        """Ошибка, которую источник вернул в теле успешного (HTTP 200) ответа.
+
+        Возвращает (класс ошибки ERROR_*, текст) или None. Переопределяется
+        клиентами источников, которые так сообщают о лимитах и ключах (FMP).
+        """
+        return None

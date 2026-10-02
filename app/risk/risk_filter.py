@@ -96,7 +96,10 @@ def compute_risk(
     missing_reasons: list[str] | None = None,
     today: date | None = None,
     config: RiskFilterConfig | None = None,
+    check_liquidity: bool = True,
 ) -> RiskAssessment:
+    """``check_liquidity=False`` — объёмы неполные (Alpaca IEX): абсолютный порог
+    ликвидности к ним неприменим, причина передаётся в ``missing_reasons``."""
     """Считает RiskAssessment по фичам, дате отчётности и полноте данных."""
     cfg = config or load_risk_config()
     today = today or date.today()
@@ -140,10 +143,27 @@ def compute_risk(
                 value=features.distance_to_ema20,
             )
         )
+    # v1.5+: сильное отклонение вниз от EMA20 (резкое падение, «падающий нож»)
+    if (
+        cfg.overextension_below_ema20_pct is not None
+        and features.distance_to_ema20 is not None
+        and features.distance_to_ema20 < -cfg.overextension_below_ema20_pct
+    ):
+        flags.append(
+            RiskFlag(
+                flag="overextension",
+                reason=(
+                    f"Цена ниже EMA20 на {abs(features.distance_to_ema20):.1f}%, "
+                    f"порог {cfg.overextension_below_ema20_pct:.0f}%"
+                ),
+                value=features.distance_to_ema20,
+            )
+        )
 
     # liquidity_risk: средний объём 20д < порога
     if (
-        features.avg_volume_20d is not None
+        check_liquidity
+        and features.avg_volume_20d is not None
         and features.avg_volume_20d < cfg.liquidity_min_avg_volume
     ):
         flags.append(

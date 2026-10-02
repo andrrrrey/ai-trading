@@ -276,6 +276,7 @@ def build_source_router(settings, health_recorder=None) -> SourceRouter:
             timeout=settings.http_timeout_seconds,
             max_retries=settings.http_max_retries,
             health_recorder=health_recorder,
+            feed=settings.alpaca_data_feed,
         )
     finnhub = None
     if settings.finnhub_api_key:

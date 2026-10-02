@@ -20,6 +20,7 @@ from aiogram.enums import ParseMode
 from app.bot.handlers import build_router
 from app.bot.service import BotService
 from app.config import get_settings
+from app.db.repository import ensure_formula_version_consistent
 from app.db.session import create_engine, create_session_factory
 from app.ingestion import IngestionService, build_source_router
 from app.monitoring import SourceHealthMonitor
@@ -65,6 +66,8 @@ async def run() -> None:
 
     engine = create_engine()
     session_factory = create_session_factory(engine)
+    # thresholds.yaml изменён без смены номера версии → бот не стартует.
+    await ensure_formula_version_consistent(session_factory)
     source_router = build_source_router(
         settings, health_recorder=SourceHealthMonitor(session_factory)
     )

@@ -26,6 +26,38 @@ QUOTE_STALE_AFTER = timedelta(days=4)
 
 DISCLAIMER = "⚠️ Не является индивидуальной инвестиционной рекомендацией."
 
+# Лимит длины одного сообщения Telegram (символов).
+TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+def split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Делит текст на части не длиннее ``limit`` по границам строк.
+
+    HTML-теги в шаблонах открываются и закрываются в пределах одной строки,
+    поэтому разбиение по строкам не ломает разметку. Строка длиннее лимита
+    режется по символам (на практике — только длинный заголовок новости).
+    """
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
 _FACTOR_TITLES = {
     "momentum": "Momentum",
     "growth": "Growth",
@@ -40,7 +72,7 @@ _FLAG_TITLES = {
     "high_volatility": "высокая волатильность",
     "event_risk": "близко отчётность",
     "gap_risk": "ценовой гэп",
-    "overextension": "перегрет (отклонение от EMA)",
+    "overextension": "сильное отклонение от EMA20",
     "liquidity_risk": "низкая ликвидность",
     "missing_data": "неполные данные",
     "news_risk": "негативные новости",

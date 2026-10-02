@@ -26,7 +26,10 @@ from app.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
-_TICKER_RE = re.compile(r"^\$?[A-Za-z]{1,5}$")
+# Тикер США: 1–5 букв и, для классов акций, суффикс через точку/дефис/слэш
+# (BRK.B, BRK-B, BF/B). Внутри системы класс пишется через точку: BRK.B.
+TICKER_PATTERN = r"^\$?([A-Za-z]{1,5})(?:[.\-/]([A-Za-z]{1,2}))?$"
+_TICKER_RE = re.compile(TICKER_PATTERN)
 
 WELCOME = (
     "👋 Пришлите тикер акции США (например, <code>AAPL</code> или <code>$NVDA</code>) — "
@@ -78,19 +81,41 @@ def parse_ticker(text: str) -> str | None:
     """Извлекает тикер из сообщения (NVDA / $NVDA); None если не похоже на тикер."""
     if not text:
         return None
-    candidate = text.strip()
-    if not _TICKER_RE.match(candidate):
+    match = _TICKER_RE.match(text.strip())
+    if match is None:
         return None
-    return candidate.lstrip("$").upper()
+    base, share_class = match.groups()
+    return f"{base}.{share_class}".upper() if share_class else base.upper()
 
 
 class BotService:
     def __init__(self, pipeline: Pipeline, session_factory):
         self._pipeline = pipeline
         self._session_factory = session_factory
+        # Расчёты в работе: (чат, тикер). Повторное сообщение с тем же тикером, пока
+        # идёт расчёт, не запускает второй (чек-лист 1.9.1: «запускается один раз»).
+        self._in_flight: set[tuple[int | None, str]] = set()
 
-    async def analyze(self, ticker: str) -> tuple[str, int | None]:
+    def is_running(self, ticker: str, chat_id: int | None = None) -> bool:
+        return (chat_id, ticker.upper()) in self._in_flight
+
+    async def analyze(
+        self, ticker: str, *, chat_id: int | None = None
+    ) -> tuple[str, int | None]:
         """Полный расчёт по тикеру. Возвращает (текст, signal_id | None при ошибке)."""
+        key = (chat_id, ticker.upper())
+        if key in self._in_flight:
+            return (
+                f"⏳ Расчёт {ticker.upper()} уже выполняется — дождитесь результата.",
+                None,
+            )
+        self._in_flight.add(key)
+        try:
+            return await self._analyze(ticker)
+        finally:
+            self._in_flight.discard(key)
+
+    async def _analyze(self, ticker: str) -> tuple[str, int | None]:
         try:
             signal_id = await self._pipeline.run(ticker)
         except SourceError as exc:
@@ -106,9 +131,17 @@ class BotService:
             logger.exception("ошибка расчёта по тикеру %s", ticker)
             return ("⚠️ Внутренняя ошибка расчёта. Попробуйте позже.", None)
 
-        async with self._session_factory() as session:
-            signal = await get_signal(session, signal_id)
-        return (templates.render_main(signal), signal_id)
+        try:
+            async with self._session_factory() as session:
+                signal = await get_signal(session, signal_id)
+            return (templates.render_main(signal), signal_id)
+        except Exception:  # noqa: BLE001 — расчёт сохранён, сбой только в отображении
+            logger.exception("signal %s сохранён, но не отображён", signal_id)
+            return (
+                f"⚠️ Расчёт сохранён (№{signal_id}), но сообщение не сформировано. "
+                f"Попробуйте /history {ticker.upper()}.",
+                None,
+            )
 
     async def touch_user(self, chat_id: int, username: str | None) -> None:
         """Учёт пользователя в telegram_users; сбой учёта не мешает ответу."""

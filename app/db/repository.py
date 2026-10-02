@@ -7,6 +7,7 @@ Final Score (принцип воспроизводимости, ТЗ 7, 13).
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 
 from sqlalchemy import insert, select, update
@@ -50,6 +51,10 @@ from app.status import TradeStatus
 
 class StorageError(RuntimeError):
     """Расчёт не удалось сохранить: транзакция отменена, ничего не записано."""
+
+
+class FormulaVersionConflictError(RuntimeError):
+    """В БД уже есть эта версия формул, но с другими весами/порогами."""
 
 
 def _utcnow() -> datetime:
@@ -327,12 +332,8 @@ async def touch_telegram_user(session: AsyncSession, chat_id: int, username: str
     await session.commit()
 
 
-async def upsert_active_formula_version(
-    session: AsyncSession, version: FormulaVersion, *, commit: bool = True
-) -> None:
-    """Делает версию активной (ровно одна is_active), сохраняя веса/пороги."""
-    await session.execute(update(FormulaVersionRow).values(is_active=False))
-    values = {
+def _formula_row_values(version: FormulaVersion) -> dict:
+    return {
         "version": version.version,
         "weights": version.final_score_weights,
         "thresholds": {
@@ -342,6 +343,56 @@ async def upsert_active_formula_version(
         },
         "is_active": True,
     }
+
+
+def _as_json(value) -> object:
+    """Нормализация для сравнения с jsonb (кортежи → списки)."""
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+async def check_formula_version(session: AsyncSession, version: FormulaVersion) -> None:
+    """Номер версии формул однозначно задаёт веса и пороги (ТЗ 7.2, 8).
+
+    Если в formula_versions уже есть эта версия с другими параметрами, значит
+    config/thresholds.yaml изменили без смены номера версии: одна «версия»
+    означала бы разные формулы. Бросает FormulaVersionConflictError.
+    """
+    row = await session.get(FormulaVersionRow, version.version)
+    if row is None:
+        return
+    values = _formula_row_values(version)
+    changed = [
+        key
+        for key in ("weights", "thresholds")
+        if _as_json(getattr(row, key)) != _as_json(values[key])
+    ]
+    if changed:
+        raise FormulaVersionConflictError(
+            f"версия формул {version.version} уже сохранена в БД с другими "
+            f"параметрами ({', '.join(changed)}): изменения в config/thresholds.yaml "
+            "требуют нового номера version"
+        )
+
+
+async def ensure_formula_version_consistent(
+    session_factory, config: ScoringConfig | None = None
+) -> None:
+    """Проверка при старте сервисов: активная версия формул не конфликтует с БД."""
+    async with session_factory() as session:
+        await check_formula_version(session, active_formula_version(config))
+
+
+async def upsert_active_formula_version(
+    session: AsyncSession, version: FormulaVersion, *, commit: bool = True
+) -> None:
+    """Делает версию активной (ровно одна is_active), сохраняя веса/пороги.
+
+    Версию с тем же номером, но другими параметрами не перезаписывает
+    (FormulaVersionConflictError) — журнал версий остаётся достоверным.
+    """
+    await check_formula_version(session, version)
+    await session.execute(update(FormulaVersionRow).values(is_active=False))
+    values = _formula_row_values(version)
     dialect = session.bind.dialect.name
     if dialect == "postgresql":
         stmt = postgresql_insert(FormulaVersionRow).values(**values)

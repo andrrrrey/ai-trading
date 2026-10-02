@@ -68,12 +68,29 @@ async def probe_once(router: SourceRouter, recorder: HealthRecorder) -> dict[str
 
 
 async def run_probe_loop(
-    router: SourceRouter, recorder: HealthRecorder, interval_seconds: float
+    router: SourceRouter,
+    recorder: HealthRecorder,
+    interval_seconds: float,
+    *,
+    retention_days: int | None = None,
 ) -> None:
-    """Бесконечный цикл probe (запускается в lifespan FastAPI)."""
+    """Бесконечный цикл probe (запускается в lifespan FastAPI).
+
+    После каждого прохода удаляет записи source_health старше ``retention_days``
+    (если рекордер это поддерживает).
+    """
     while True:
         try:
             await probe_once(router, recorder)
         except Exception:  # noqa: BLE001
             logger.exception("source probe: сбой прохода")
+        purge = getattr(recorder, "purge_older_than", None)
+        if retention_days and purge is not None:
+            try:
+                removed = await purge(retention_days)
+                if removed:
+                    logger.info("source_health: удалено записей старше %s дн.: %s",
+                                retention_days, removed)
+            except Exception:  # noqa: BLE001
+                logger.exception("source_health: сбой очистки")
         await asyncio.sleep(interval_seconds)

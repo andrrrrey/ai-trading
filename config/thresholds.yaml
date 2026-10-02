@@ -1,7 +1,9 @@
 # Веса Score, пороги Risk Filter и Rule Engine — версия v1 (ТЗ разделы 8–10).
 # Этот файл — источник значений для formula_versions (is_active). Изменение
 # порогов/весов = новая версия формул, не требует деплоя кода (КП с. 7, 9).
-version: "v1.4"
+version: "v1.5"
+# ВАЖНО: любое изменение чисел ниже требует нового номера версии. Сервисы
+# отказываются запускаться, если в БД уже есть эта версия с другими параметрами.
 
 # ---- Final Score: веса групп (зафиксированы КП, с. 7). Сумма = 1.0 ----
 final_score_weights:
@@ -31,14 +33,17 @@ factor_scores:
     eps_positive_score: 70.0     # балл при EPS > 0
     eps_negative_score: 30.0     # балл при EPS <= 0
     debt_equity_penalty: 50.0    # штраф на единицу Debt/Equity (обратная шкала)
+    negative_equity_de_score: 0.0  # D/E < 0 (отрицательный капитал) — худший балл (v1.5)
   relative_strength:
     rel_strength_multiplier: 5.0
+    align_by_date: true          # доходности тикера и SPY — на общих датах (v1.5)
   volume:
     ratio_multiplier: 50.0
   valuation:
     pe_fair_low: 10.0            # P/E <= low → 100 (дёшево)
     pe_fair_high: 40.0           # P/E >= high → 0 (дорого)
     pe_negative_score: 25.0      # отрицательный P/E (нет прибыли) → низкий балл
+    prefer_ttm_pe: true          # forward P/E → P/E TTM → годовой P/E (v1.5)
   catalysts:
     # score = clamp(50 + signal·multiplier), signal ∈ [-1, 1] — взвешенное среднее
     # тональности новостей (news_weight) и оценки событий SEC (sec_weight).
@@ -68,6 +73,8 @@ data_quality:
   min_history_bars_critical: 200     # < 200 баров: EMA200 не рассчитать → критично
   min_history_bars_full: 250         # 200–249 баров → пониженная достоверность
   fundamentals_missing_critical: 3   # нет ≥3 из 6 ключевых fundamentals → критично
+  max_last_bar_age_business_days: 3  # последний бар старше 3 раб. дней → критично (v1.5)
+  check_actively_trading: true       # профиль: бумага не торгуется → критично (v1.5)
 
 # ---- Risk Filter: пороги флагов (v1; ТЗ раздел 9) ----
 risk_filter:
@@ -76,6 +83,7 @@ risk_filter:
                                          # без учёта биржевых праздников)
   gap_risk_pct: 5.0                       # |Gap%| > 5%
   overextension_ema20_pct: 15.0          # Distance to EMA20 > 15%
+  overextension_below_ema20_pct: 15.0    # Distance to EMA20 < −15% (v1.5)
   liquidity_min_avg_volume: 500000       # средний объём 20д
   news_risk_sentiment: -0.3              # news_sentiment < -0.3 (Этап 2)
 

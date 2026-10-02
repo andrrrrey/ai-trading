@@ -195,11 +195,22 @@ def _fundamentals(fund: Fundamentals, cfg: FundamentalsConfig) -> FactorScore:
         else None
     )
     gm_c = _clamp(gm * 100.0) if gm is not None else None
-    de_c = _clamp(100.0 - de * cfg.debt_equity_penalty) if de is not None else None
+    negative_equity = (
+        de is not None and de < 0 and cfg.negative_equity_de_score is not None
+    )
+    if de is None:
+        de_c = None
+    elif negative_equity:
+        # D/E < 0 — отрицательный собственный капитал, а не «нулевой долг».
+        de_c = cfg.negative_equity_de_score
+    else:
+        de_c = _clamp(100.0 - de * cfg.debt_equity_penalty)
     score = _weighted([(eps_c, 1.0), (gm_c, 1.0), (de_c, 1.0)])
     rule = (
         f"avg(EPS-скор {_fmt(eps_c)}, GrossMargin-скор {_fmt(gm_c)}, "
-        f"D/E-скор {_fmt(de_c)} [обратная шкала])"
+        f"D/E-скор {_fmt(de_c)} [обратная шкала"
+        + (", D/E < 0 — отрицательный капитал" if negative_equity else "")
+        + "])"
     )
     return _make(
         "fundamentals",
@@ -232,7 +243,12 @@ def _volume(features: FeatureSet, cfg) -> FactorScore:
 
 
 def _valuation(fund: Fundamentals, cfg) -> FactorScore:
-    pe = fund.forward_pe if fund.forward_pe is not None else fund.pe
+    if fund.forward_pe is not None:
+        pe, pe_kind = fund.forward_pe, "forward P/E"
+    elif cfg.prefer_ttm_pe and fund.pe_ttm is not None:
+        pe, pe_kind = fund.pe_ttm, "P/E TTM"
+    else:
+        pe, pe_kind = fund.pe, "годовой P/E"
     if pe is None:
         score = None
     elif pe <= 0:
@@ -247,11 +263,12 @@ def _valuation(fund: Fundamentals, cfg) -> FactorScore:
         )
     rule = (
         f"обратная шкала P/E в диапазоне [{cfg.pe_fair_low}, {cfg.pe_fair_high}] "
-        f"(ниже P/E = выше балл)"
+        f"(ниже P/E = выше балл); использован {pe_kind}"
     )
-    return _make(
-        "valuation", score, {"pe": fund.pe, "forward_pe": fund.forward_pe}, rule
-    )
+    inputs = {"pe": fund.pe, "forward_pe": fund.forward_pe}
+    if cfg.prefer_ttm_pe:
+        inputs["pe_ttm"] = fund.pe_ttm
+    return _make("valuation", score, inputs, rule)
 
 
 def _catalysts(

@@ -80,9 +80,13 @@ def test_missing_factor_is_critical():
 
 def test_thresholds_live_in_versioned_config():
     cfg = load_scoring_config()
-    assert cfg.version == "v1.4"
+    assert cfg.version == "v1.5"
     assert cfg.data_quality == DataQualityConfig(
-        min_history_bars_critical=200, min_history_bars_full=250, fundamentals_missing_critical=3
+        min_history_bars_critical=200,
+        min_history_bars_full=250,
+        fundamentals_missing_critical=3,
+        max_last_bar_age_business_days=3,
+        check_actively_trading=True,
     )
     # записи до v1.2 воспроизводятся без уровней неполноты
     legacy = ScoringConfig.model_validate({"version": "v1.1", "data_quality": None})

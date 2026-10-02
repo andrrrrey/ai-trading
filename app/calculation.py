@@ -23,7 +23,7 @@ confidence либо не формирует сигнал»):
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict
 
@@ -83,6 +83,17 @@ def _detail(data_issues: list[str] | None, prefix: str, default: str) -> str:
     return default
 
 
+def business_days_between(start: date, end: date) -> int:
+    """Число рабочих дней (Пн–Пт) в интервале (start, end]; 0 если end <= start."""
+    days = 0
+    cursor = start
+    while cursor < end:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            days += 1
+    return days
+
+
 def assess_data_quality(
     *,
     cfg: DataQualityConfig,
@@ -95,11 +106,29 @@ def assess_data_quality(
     news_available: bool,
     filings_available: bool,
     data_issues: list[str] | None = None,
+    calc_date: date | None = None,
+    actively_trading: bool | None = None,
 ) -> DataQuality:
     critical: list[str] = []
     reduced: list[str] = []
 
     bars = len(price_history.bars)
+    max_age = cfg.max_last_bar_age_business_days
+    if max_age is not None and calc_date is not None and price_history.bars:
+        last_date = price_history.bars[-1].date
+        age = business_days_between(last_date, calc_date)
+        if age > max_age:
+            critical.append(
+                f"история цен устарела: последний бар {last_date.isoformat()} — "
+                f"{age} раб. дн. до даты расчёта (допустимо {max_age})"
+            )
+    if cfg.check_actively_trading and actively_trading is False:
+        critical.append("по данным профиля эмитента бумага не торгуется")
+    if price_history.volume_partial:
+        reduced.append(
+            f"объёмы {price_history.source} покрывают не весь рынок (фид IEX) — "
+            "порог ликвидности не проверен"
+        )
     if bars < cfg.min_history_bars_critical:
         critical.append(
             f"история цен {bars} < {cfg.min_history_bars_critical} баров — EMA200 не рассчитать"
@@ -179,8 +208,13 @@ def calculate(
     news_available: bool = True,
     filings_available: bool = True,
     data_issues: list[str] | None = None,
+    actively_trading: bool | None = None,
 ) -> CalculationResult:
-    features = compute_features(price_history, benchmark)
+    features = compute_features(
+        price_history,
+        benchmark,
+        align_benchmark_by_date=config.factor_scores.relative_strength.align_by_date,
+    )
     catalysts = analyze_catalysts(
         news,
         filings,
@@ -204,6 +238,8 @@ def calculate(
             news_available=news_available,
             filings_available=filings_available,
             data_issues=data_issues,
+            calc_date=calc_date,
+            actively_trading=actively_trading,
         )
         if quality.critical and final.final_score is not None:
             final = final.model_copy(
@@ -220,6 +256,7 @@ def calculate(
             missing_reasons=quality.reasons,
             today=calc_date,
             config=config.risk_filter,
+            check_liquidity=not price_history.volume_partial,
         )
         return CalculationResult(
             features=features,
@@ -248,6 +285,7 @@ def calculate(
         missing_factors=missing,
         today=calc_date,
         config=config.risk_filter,
+        check_liquidity=not price_history.volume_partial,
     )
     return CalculationResult(
         features=features,
@@ -268,6 +306,7 @@ def _history_to_raw(history: PriceHistory | None) -> dict | None:
         "ticker": history.ticker,
         "source": history.source,
         "fetched_at": history.fetched_at.isoformat(),
+        "volume_partial": history.volume_partial,
         "columns": BAR_COLUMNS,
         "bars": [
             [b.date.isoformat(), b.open, b.high, b.low, b.close, b.volume] for b in history.bars
@@ -294,7 +333,11 @@ def _history_from_raw(raw: dict | None) -> PriceHistory | None:
         for row in raw["bars"]
     ]
     return PriceHistory(
-        ticker=raw["ticker"], bars=bars, source=raw["source"], fetched_at=fetched_at
+        ticker=raw["ticker"],
+        bars=bars,
+        source=raw["source"],
+        fetched_at=fetched_at,
+        volume_partial=bool(raw.get("volume_partial", False)),
     )
 
 
@@ -348,6 +391,7 @@ def replay_from_raw_inputs(raw: dict, config: ScoringConfig) -> CalculationResul
     history = _history_from_raw(raw["price_history"])
     earnings = raw.get("earnings") or {}
     next_date = earnings.get("next_earnings_date")
+    profile = raw.get("profile") or {}
     return calculate(
         price_history=history,
         benchmark=_history_from_raw(raw.get("benchmark")),
@@ -361,4 +405,5 @@ def replay_from_raw_inputs(raw: dict, config: ScoringConfig) -> CalculationResul
         news_available=raw.get("news_available", True),
         filings_available=raw.get("filings_available", True),
         data_issues=raw.get("data_issues"),
+        actively_trading=profile.get("is_actively_trading"),
     )

@@ -18,6 +18,7 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.config import get_settings
+from app.db.repository import ensure_formula_version_consistent
 from app.db.session import create_engine, create_session_factory
 from app.ingestion import build_source_router
 from app.monitoring import SourceHealthMonitor, get_monitor
@@ -35,6 +36,8 @@ async def lifespan(app: FastAPI):
     app.state.db_engine = engine
     session_factory = create_session_factory(engine)
     app.state.session_factory = session_factory
+    # thresholds.yaml изменён без смены номера версии → не стартуем (ТЗ 7.2, 8).
+    await ensure_formula_version_consistent(session_factory)
     monitor = SourceHealthMonitor(session_factory)
     app.state.source_monitor = monitor
     # Фоновая проверка источников: /health актуален и без запросов пользователей.
@@ -43,7 +46,12 @@ async def lifespan(app: FastAPI):
     if settings.health_probe_interval_seconds > 0:
         probe_router = build_source_router(settings, health_recorder=monitor)
         probe_task = asyncio.create_task(
-            run_probe_loop(probe_router, monitor, settings.health_probe_interval_seconds)
+            run_probe_loop(
+                probe_router,
+                monitor,
+                settings.health_probe_interval_seconds,
+                retention_days=settings.source_health_retention_days,
+            )
         )
     try:
         yield

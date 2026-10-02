@@ -1,6 +1,8 @@
 """Тесты конфигурации приложения."""
 from __future__ import annotations
 
+import pytest
+
 from app.config import Settings
 
 
@@ -69,3 +71,25 @@ def test_required_settings_are_reported():
 def test_public_bot_must_be_explicit():
     settings = _complete(telegram_allowed_ids="", telegram_allow_public=True)
     assert settings.missing_required("bot") == []
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("123456789", [123456789]),
+        ("1,2", [1, 2]),
+        ("123, 456 ", [123, 456]),
+        ("[1,2]", [1, 2]),
+        ("", []),
+    ],
+)
+def test_allowed_ids_from_environment(monkeypatch, raw, expected):
+    """Значение из окружения/.env (а не из конструктора) — так его читает сервер."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_IDS", raw)
+    assert Settings(_env_file=None).telegram_allowed_ids == expected
+
+
+def test_allowed_ids_from_env_file(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("TELEGRAM_ALLOWED_IDS=111,222\n", encoding="utf-8")
+    assert Settings(_env_file=env).telegram_allowed_ids == [111, 222]
