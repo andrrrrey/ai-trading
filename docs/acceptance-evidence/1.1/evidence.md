@@ -1,7 +1,7 @@
 # Подэтап 1.1 — Источники данных
 
-- Сформировано: 2026-10-01 20:58 UTC (`scripts/collect_evidence.py`)
-- Commit: `793d52c` · версия формул: `v1.4`
+- Сформировано: 2026-10-02 04:39 UTC (`scripts/collect_evidence.py`)
+- Commit: `34660c1` · версия формул: `v1.4`
 - Живые прогоны: нет — выполнить на сервере с --live
 
 ## Что подтверждает (пункты чек-листа)
@@ -12,8 +12,8 @@
 ## Автотесты подэтапа
 ```
 $ python -m pytest -q -p no:cacheprovider tests/test_fmp_client.py tests/test_sec_edgar_client.py tests/test_alpaca_finnhub.py tests/test_source_router.py
-..................                                                       [100%]
-18 passed in 1.43s
+...................                                                      [100%]
+19 passed in 1.34s
 [exit code 0]
 ```
 
