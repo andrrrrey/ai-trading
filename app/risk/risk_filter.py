@@ -71,7 +71,10 @@ _FLAG_CEILINGS: dict[str, TradeStatus] = {
 
 
 def _business_days_until(target: date, today: date) -> int | None:
-    """Число рабочих дней (Пн–Пт) от today до target включительно; None если в прошлом."""
+    """Число рабочих дней (Пн–Пт) от today до target включительно; None если в прошлом.
+
+    Биржевые праздники NYSE/Nasdaq не исключаются (правило v1.4, согласовано).
+    """
     if target < today:
         return None
     days = 0

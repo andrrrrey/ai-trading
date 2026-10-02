@@ -17,6 +17,7 @@ from datetime import datetime
 
 from app.calculation import build_raw_inputs, calculate
 from app.db.repository import (
+    StorageError,
     save_calculation_context,
     save_signal,
     upsert_active_formula_version,
@@ -189,35 +190,34 @@ class Pipeline:
         }
         source_context["mode"] = aggregate_mode(source_context)
 
+        # Версия формул, сигнал и весь контекст расчёта (tickers, price_history,
+        # fundamentals_snapshot, market_context) — одна транзакция: либо расчёт
+        # сохранён полностью, либо не сохранено ничего и бот сообщает об ошибке.
         async with self._session_factory() as session:
-            await upsert_active_formula_version(session, active_formula_version(self._config))
-            signal = await save_signal(
-                session,
-                features=features,
-                fundamentals=market.fundamentals,
-                final=final,
-                risk=risk,
-                status=status,
-                # Цена сигнала — текущая котировка; без неё — закрытие последней
-                # дневной свечи (это явно показывается пользователю).
-                price=market.quote.price if market.quote else features.price,
-                news_sentiment=result.catalysts.sentiment,
-                catalyst_context=result.catalysts.model_dump(mode="json"),
-                formula_snapshot=active_formula_version(self._config).snapshot(),
-                source_context=source_context,
-                raw_inputs=raw_inputs,
-                data_quality=(
-                    result.data_quality.model_dump() if result.data_quality else None
-                ),
-            )
-            logger.info(
-                "signal saved id=%s ticker=%s final=%s mode=%s",
-                signal.id,
-                ticker,
-                final.final_score,
-                source_context["mode"],
-            )
             try:
+                await upsert_active_formula_version(
+                    session, active_formula_version(self._config), commit=False
+                )
+                signal = await save_signal(
+                    session,
+                    features=features,
+                    fundamentals=market.fundamentals,
+                    final=final,
+                    risk=risk,
+                    status=status,
+                    # Цена сигнала — текущая котировка; без неё — закрытие последней
+                    # дневной свечи (это явно показывается пользователю).
+                    price=market.quote.price if market.quote else features.price,
+                    news_sentiment=result.catalysts.sentiment,
+                    catalyst_context=result.catalysts.model_dump(mode="json"),
+                    formula_snapshot=active_formula_version(self._config).snapshot(),
+                    source_context=source_context,
+                    raw_inputs=raw_inputs,
+                    data_quality=(
+                        result.data_quality.model_dump() if result.data_quality else None
+                    ),
+                    commit=False,
+                )
                 await save_calculation_context(
                     session,
                     signal=signal,
@@ -229,8 +229,19 @@ class Pipeline:
                     news_sentiment=result.catalysts.sentiment,
                     profile=market.profile,
                     price_histories=[h for h in (market.price_history, benchmark) if h],
+                    commit=False,
                 )
-            except Exception:  # noqa: BLE001 — сигнал уже сохранён целиком в snapshot
+                signal_id = signal.id
+                await session.commit()
+            except Exception as exc:
                 await session.rollback()
-                logger.exception("не удалось заполнить профильные таблицы для signal %s", signal.id)
-            return signal.id
+                logger.exception("расчёт %s не сохранён: транзакция отменена", ticker)
+                raise StorageError(f"расчёт {ticker} не сохранён: {exc!r}") from exc
+        logger.info(
+            "signal saved id=%s ticker=%s final=%s mode=%s",
+            signal_id,
+            ticker,
+            final.final_score,
+            source_context["mode"],
+        )
+        return signal_id

@@ -162,9 +162,10 @@ def normalize_fundamentals(raw: Fundamentals) -> tuple[Fundamentals, QualityRepo
     Значения-пропуски остаются None — никогда не заменяются 0 (ТЗ 6.6).
     """
     missing = [f for f in KEY_FUNDAMENTAL_FIELDS if getattr(raw, f) is None]
-    is_incomplete = bool(missing)
+    is_incomplete = bool(missing) or bool(raw.unavailable_parts)
     normalized = raw.model_copy(update={"is_incomplete": is_incomplete})
     issues = [f"нет значения: {f}" for f in missing]
+    issues += [f"недоступен запрос {part}" for part in raw.unavailable_parts]
     report = QualityReport(
         source=raw.source,
         total_rows=len(KEY_FUNDAMENTAL_FIELDS),

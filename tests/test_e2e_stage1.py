@@ -359,7 +359,9 @@ async def test_unknown_ticker_with_real_clients(session_factory):
 async def test_fmp_plan_restriction_message(session_factory):
     respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
     _mock_fmp_fundamentals()
-    respx.get(FMP_METRICS).mock(return_value=httpx.Response(402, json={"Error": "Premium"}))
+    # тариф не даёт ни одного из трёх запросов отчётности → честный отказ
+    for pattern in (FMP_RATIOS, FMP_METRICS, FMP_GROWTH):
+        respx.get(pattern).mock(return_value=httpx.Response(402, json={"Error": "Premium"}))
     service = build_service(session_factory, SourceHealthMonitor())
 
     text, sid = await service.analyze("AAPL")
@@ -367,6 +369,42 @@ async def test_fmp_plan_restriction_message(session_factory):
     assert sid is None
     assert "HTTP 402" in text and "тариф" in text
     assert "не найден" not in text
+
+
+@respx.mock
+async def test_partial_fundamentals_failure_follows_quality_rule(session_factory):
+    # сбой key-metrics: теряется только forward P/E → Score с пониженной достоверностью
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    respx.get(FMP_METRICS).mock(return_value=httpx.Response(402, json={"Error": "Premium"}))
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    text, sid = await service.analyze("AAPL")
+
+    assert sid is not None and "достоверность: пониженная" in text
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    quality = signal.raw_input_snapshot["data_quality"]
+    assert signal.final_score is not None
+    assert quality["reduced"] == ["fundamentals: недоступны запросы key-metrics (fmp: auth)"]
+    assert signal.raw_input_snapshot["fundamentals"]["forward_pe"] is None
+    assert signal.raw_input_snapshot["fundamentals"]["pe"] == 28.0  # Valuation по P/E
+
+    # сбой income-statement-growth: нет двух growth-показателей → тоже reduced,
+    # но фактор Growth не рассчитать → Final Score не выдаётся (фактор — критично)
+    respx.get(FMP_METRICS).mock(
+        return_value=httpx.Response(200, json=[{"eps": 6.0, "forwardPE": 24.0}])
+    )
+    respx.get(FMP_GROWTH).mock(side_effect=httpx.ReadTimeout("slow"))
+    text, sid = await service.analyze("AAPL")
+    async with session_factory() as s:
+        signal = (await list_signals(s, "AAPL"))[0]
+    quality = signal.raw_input_snapshot["data_quality"]
+    assert any(
+        "income-statement-growth (fmp: timeout)" in reason for reason in quality["reduced"]
+    )
+    assert "фактор growth не рассчитан" in quality["critical"]
+    assert signal.final_score is None
 
 
 # --------------------------------------------------------------------------- #
@@ -744,3 +782,29 @@ async def test_profile_tables_are_filled(session_factory):
     assert ctx[0].next_earnings_date == date(2099, 1, 15)
     assert ctx[0].avg_volume_20d is not None
     assert user.username == "tester2"
+
+
+@respx.mock
+async def test_signal_and_context_are_saved_atomically(session_factory, monkeypatch):
+    from app import pipeline as pipeline_module
+    from app.db.models import FundamentalsSnapshot, MarketContext, PriceHistory, Ticker
+
+    original = pipeline_module.save_calculation_context
+
+    async def fail_after_writing(session, **kwargs):
+        await original(session, **kwargs)  # строки уже добавлены в транзакцию…
+        raise RuntimeError("disk full")  # …и тут сбой
+
+    monkeypatch.setattr(pipeline_module, "save_calculation_context", fail_after_writing)
+    respx.get(FMP_HIST).mock(return_value=httpx.Response(200, json=_fmp_hist()))
+    _mock_fmp_fundamentals()
+    service = build_service(session_factory, SourceHealthMonitor())
+
+    text, sid = await service.analyze("AAPL")
+
+    assert sid is None
+    assert "не сохранён" in text
+    assert "Final Score" not in text  # результат не выдаётся без записи в историю
+    async with session_factory() as s:
+        for model in (Signal, FundamentalsSnapshot, MarketContext, PriceHistory, Ticker):
+            assert await s.scalar(select(func.count()).select_from(model)) == 0, model

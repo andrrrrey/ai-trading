@@ -72,7 +72,8 @@ data_quality:
 # ---- Risk Filter: пороги флагов (v1; ТЗ раздел 9) ----
 risk_filter:
   high_volatility_atr_ratio: 0.05        # ATR/close > 5%
-  event_risk_days: 3                     # earnings в ближайшие <= N раб. дней
+  event_risk_days: 3                     # earnings в ближайшие <= N раб. дней (будни пн–пт,
+                                         # без учёта биржевых праздников)
   gap_risk_pct: 5.0                       # |Gap%| > 5%
   overextension_ema20_pct: 15.0          # Distance to EMA20 > 15%
   liquidity_min_avg_volume: 500000       # средний объём 20д

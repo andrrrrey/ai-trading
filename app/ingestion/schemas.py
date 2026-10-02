@@ -75,6 +75,8 @@ class Fundamentals(SourcedModel):
     forward_pe: float | None = None
     # Проставляется слоем нормализации: часть ключевых метрик отсутствует.
     is_incomplete: bool = False
+    # Запросы, которые не удалось выполнить: "key-metrics (fmp: timeout)".
+    unavailable_parts: list[str] = []
 
 
 class Earnings(SourcedModel):

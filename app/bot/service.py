@@ -10,7 +10,7 @@ import logging
 import re
 
 from app.bot import templates
-from app.db.repository import get_signal, list_signals, touch_telegram_user
+from app.db.repository import StorageError, get_signal, list_signals, touch_telegram_user
 from app.ingestion.base_client import (
     ERROR_AUTH,
     ERROR_INVALID_RESPONSE,
@@ -96,6 +96,12 @@ class BotService:
         except SourceError as exc:
             logger.warning("расчёт %s остановлен: %s (kind=%s)", ticker, exc, exc.kind)
             return (source_error_message(ticker, exc), None)
+        except StorageError:
+            return (
+                "💾 Расчёт выполнен, но не сохранён в базу — результат не выдаётся, "
+                "чтобы ответ не расходился с историей. Попробуйте позже.",
+                None,
+            )
         except Exception:  # noqa: BLE001 — техошибка не должна ронять бот
             logger.exception("ошибка расчёта по тикеру %s", ticker)
             return ("⚠️ Внутренняя ошибка расчёта. Попробуйте позже.", None)

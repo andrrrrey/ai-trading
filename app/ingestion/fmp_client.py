@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -161,15 +162,34 @@ class FMPClient(BaseSourceClient):
 
         Все три запроса используют один и тот же ``period`` (ТЗ 6.6) — Revenue
         Growth и EPS Growth не смешивают квартальные и годовые данные.
+
+        Запросы выполняются независимо: сбой одного не отменяет остальные.
+        Показатели из недоступного запроса остаются None, а сам запрос попадает в
+        ``unavailable_parts`` — дальше правило полноты данных решает, понижена
+        достоверность или Final Score не выдаётся. Если не ответил ни один
+        запрос, пробрасывается ошибка источника (fundamentals нет совсем).
         """
-        ratios = await self._get_json("/stable/ratios", params={"symbol": ticker, "period": period})
-        metrics = await self._get_json(
-            "/stable/key-metrics", params={"symbol": ticker, "period": period}
+        parts = ("ratios", "key-metrics", "income-statement-growth")
+        results = await asyncio.gather(
+            *(
+                self._get_json(f"/stable/{part}", params={"symbol": ticker, "period": period})
+                for part in parts
+            ),
+            return_exceptions=True,
         )
-        growth = await self._get_json(
-            "/stable/income-statement-growth",
-            params={"symbol": ticker, "period": period},
-        )
+        unavailable: list[str] = []
+        payloads: list[Any] = []
+        for part, result in zip(parts, results, strict=True):
+            if isinstance(result, SourceError):
+                unavailable.append(f"{part} ({result.source}: {result.kind})")
+                payloads.append(None)
+            elif isinstance(result, BaseException):
+                raise result
+            else:
+                payloads.append(result)
+        if len(unavailable) == len(parts):
+            raise next(r for r in results if isinstance(r, SourceError))
+        ratios, metrics, growth = payloads
         r = _as_rows(ratios)[:1]
         m = _as_rows(metrics)[:1]
         g = _as_rows(growth)[:1]
@@ -193,6 +213,7 @@ class FMPClient(BaseSourceClient):
                 r.get("priceToEarningsRatio"), r.get("priceEarningsRatio"), m.get("peRatio")
             ),
             forward_pe=_to_float(m.get("forwardPE")),
+            unavailable_parts=unavailable,
             source=self.source,
             fetched_at=_now(),
         )
