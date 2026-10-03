@@ -20,6 +20,7 @@ from app.calculation import calculate
 from app.config import get_settings
 from app.db.session import create_all
 from app.main import app
+from app.scoring import thresholds
 from app.scoring.thresholds import DataQualityConfig
 from tests.test_source_health import _app_env
 from tests.test_v15_fixes import FUND, V15, _assess, _history
@@ -37,6 +38,13 @@ def test_acceptance_smoke_dependencies_are_in_production_image():
     ]
     dependencies = project["dependencies"]
     assert any(item.startswith("aiosqlite") for item in dependencies)
+
+
+def test_scoring_config_is_found_from_runtime_workdir(monkeypatch, tmp_path):
+    """Установленный wheel должен читать Compose mount /app/config."""
+    monkeypatch.chdir(REPO_ROOT)
+    monkeypatch.setattr(thresholds, "DEFAULT_THRESHOLDS_PATH", tmp_path / "missing.yaml")
+    assert thresholds.load_scoring_config().version == "v1.5"
 
 
 # --------------------------------------------------------------------------- #

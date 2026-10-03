@@ -156,7 +156,14 @@ class ScoringConfig(BaseModel):
 
 def load_scoring_config(path: str | Path | None = None) -> ScoringConfig:
     """Читает config/thresholds.yaml в типизированную ScoringConfig."""
-    resolved = Path(path) if path is not None else DEFAULT_THRESHOLDS_PATH
+    if path is not None:
+        resolved = Path(path)
+    else:
+        # В editable/source-запуске конфиг находится рядом с пакетом. После
+        # ``pip install .`` пакет живёт в site-packages, а Compose монтирует
+        # конфиг в рабочий каталог /app/config. Поддерживаем оба варианта.
+        workdir_path = Path.cwd() / "config" / "thresholds.yaml"
+        resolved = workdir_path if workdir_path.is_file() else DEFAULT_THRESHOLDS_PATH
     with open(resolved, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return ScoringConfig.model_validate(data)
