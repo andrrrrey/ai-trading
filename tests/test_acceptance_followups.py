@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import tomllib
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
@@ -27,6 +28,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CALC = date(2026, 10, 5)  # понедельник
 FRESH = date(2026, 10, 2)  # пятница: 1 рабочий день до расчёта
 STALE = date(2026, 9, 1)
+
+
+def test_acceptance_smoke_dependencies_are_in_production_image():
+    """Live smoke запускается в app-контейнере без dev extra."""
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    dependencies = project["dependencies"]
+    assert any(item.startswith("aiosqlite") for item in dependencies)
 
 
 # --------------------------------------------------------------------------- #

@@ -7,6 +7,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "aiogram>=3.13",
+    # Нужен production-образу: acceptance smoke использует временную SQLite-БД,
+    # чтобы не загрязнять PostgreSQL реальными проверочными расчётами.
+    "aiosqlite>=0.20",
     "sqlalchemy[asyncio]>=2.0.35",
     "asyncpg>=0.29",
     "alembic>=1.13",
@@ -24,7 +27,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "aiosqlite>=0.20",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "respx>=0.21",
