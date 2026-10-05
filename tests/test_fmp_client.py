@@ -174,7 +174,8 @@ async def test_fundamentals_keep_dates_and_reject_eps_growth_from_nonpositive_ba
     assert f.growth_date == date(2026, 9, 1)
     assert f.eps_previous == 0.0
     assert f.eps_growth is None
-    assert f.eps_growth_basis == "not_applicable_nonpositive_previous_eps"
+    assert f.eps_growth_basis == "turnaround_no_growth_score"
+    assert f.eps_turnaround is True
     assert f.pe_ttm == 21.0 and f.pe_ttm_as_of is not None
 
 

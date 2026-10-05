@@ -120,6 +120,19 @@ def test_neutral_sec_event_keeps_its_weight_against_news():
     assert result.signal == pytest.approx(1.0 / 3.0)
 
 
+def test_successful_sec_check_without_events_keeps_neutral_weight():
+    result = analyze_catalysts(
+        [news("Company beats estimates")],
+        [],
+        filings_available=True,
+        calc_date=CALC,
+    )
+
+    assert result.sec_event_count == 0
+    assert result.sec_event_score == 0.0
+    assert result.signal == pytest.approx(1.0 / 3.0)
+
+
 def test_recent_report_is_confirmation_only():
     result = analyze_catalysts([], [filing("10-Q", date(2026, 8, 1))], calc_date=CALC)
     assert result.recent_report_count == 1

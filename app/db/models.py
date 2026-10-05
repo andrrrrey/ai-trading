@@ -92,6 +92,7 @@ class FundamentalsSnapshot(Base):
     eps: Mapped[float | None] = mapped_column(Float)
     eps_previous: Mapped[float | None] = mapped_column(Float)
     eps_basis: Mapped[str | None] = mapped_column(String(64))
+    eps_turnaround: Mapped[bool | None] = mapped_column(Boolean)
     gross_margin: Mapped[float | None] = mapped_column(Float)
     debt_equity: Mapped[float | None] = mapped_column(Float)
     pe: Mapped[float | None] = mapped_column(Float)

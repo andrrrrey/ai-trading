@@ -228,7 +228,7 @@ async def test_new_formula_version_number_is_accepted(session_factory):
     async with session_factory() as session:
         await upsert_active_formula_version(session, active_formula_version(bumped))
         rows = (await session.execute(select(FormulaVersionRow))).scalars().all()
-    assert {r.version: r.is_active for r in rows} == {"v1.5.1": False, "v1.6-test": True}
+    assert {r.version: r.is_active for r in rows} == {"v1.5.2": False, "v1.6-test": True}
 
 
 def test_config_is_mounted_into_app_and_bot():

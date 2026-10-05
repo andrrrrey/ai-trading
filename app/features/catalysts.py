@@ -127,7 +127,8 @@ class CatalystAnalysis(BaseModel):
         "signal = (news_weight·news_sentiment + sec_weight·sec_event_score) / Σ весов "
         "доступных компонент; news_sentiment — Σ оценка·w / Σ w по заголовкам за окно "
         "(−1/0/+1, w = 1 − возраст/окно); "
-        "sec_event_score — Σ знак·w / Σ w по 8-K/NT за окно, w = 1 − возраст/окно"
+        "sec_event_score — Σ знак·w / Σ w по 8-K/NT за окно, w = 1 − возраст/окно; "
+        "при успешной проверке SEC без событий — 0 с сохранением веса SEC"
     )
 
     @property
@@ -279,7 +280,14 @@ def analyze_catalysts(
                     source=filing.source,
                 )
             )
-    sec_event_score = (signed_sum / signed_weight) if signed_weight > 0 else None
+    # Согласованное правило v1.5.2: успешный ответ SEC без событий — тоже
+    # нейтральная компонента 0 с полным весом SEC. None означает только
+    # недоступность источника и приводит к исключению его веса.
+    sec_event_score = (
+        signed_sum / signed_weight
+        if signed_weight > 0
+        else (0.0 if filings_available else None)
+    )
 
     # --- итоговый сигнал ---
     components: list[tuple[float, float]] = []

@@ -295,9 +295,18 @@ class FMPClient(BaseSourceClient):
             previous.get("netIncomePerShare"), previous.get("eps")
         )
         provider_eps_growth = None if periods_mismatch else _to_float(g.get("growthEPS"))
+        eps_turnaround = (
+            previous_eps is not None
+            and previous_eps <= 0
+            and eps is not None
+            and eps > 0
+        )
         if periods_mismatch:
             eps_growth = None
             eps_growth_basis = "not_applicable_period_mismatch"
+        elif eps_turnaround:
+            eps_growth = None
+            eps_growth_basis = "turnaround_no_growth_score"
         elif previous_eps is not None and previous_eps <= 0:
             # Процентный рост от нулевой/отрицательной базы не имеет устойчивого
             # экономического смысла (особенно при переходе через ноль). Не
@@ -332,6 +341,7 @@ class FMPClient(BaseSourceClient):
             eps=eps,
             eps_previous=previous_eps,
             eps_basis="annual_basic_reported" if eps is not None else None,
+            eps_turnaround=eps_turnaround,
             gross_margin=_first_number(r.get("grossProfitMargin"), m.get("grossProfitMargin")),
             debt_equity=_first_number(
                 r.get("debtToEquityRatio"), r.get("debtEquityRatio"), m.get("debtToEquity")

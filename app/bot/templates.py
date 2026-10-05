@@ -465,6 +465,7 @@ def render_metrics(signal: Signal) -> str:
         basis_labels = {
             "not_applicable_nonpositive_previous_eps": "н/д: предыдущий EPS ≤ 0",
             "not_applicable_period_mismatch": "н/д: периоды EPS и Growth не совпали",
+            "turnaround_no_growth_score": "Выход в прибыль — без дополнительных баллов",
             "fmp_growthEPS_positive_previous_eps": "FMP, предыдущий EPS > 0",
             "fmp_growthEPS_base_unverified": "FMP, база не подтверждена",
         }
@@ -472,6 +473,8 @@ def render_metrics(signal: Signal) -> str:
             "• Основание EPS Growth: "
             + _e(basis_labels.get(fund["eps_growth_basis"], fund["eps_growth_basis"]))
         )
+    if fund.get("eps_turnaround"):
+        lines.append("• <b>EPS-признак: Выход в прибыль</b> (без дополнительных баллов)")
     lines += ["", DISCLAIMER]
     return "\n".join(lines)
 

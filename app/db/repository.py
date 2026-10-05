@@ -301,6 +301,7 @@ async def save_calculation_context(
             eps=fundamentals.eps,
             eps_previous=fundamentals.eps_previous,
             eps_basis=fundamentals.eps_basis,
+            eps_turnaround=fundamentals.eps_turnaround,
             gross_margin=fundamentals.gross_margin,
             debt_equity=fundamentals.debt_equity,
             pe=fundamentals.pe,

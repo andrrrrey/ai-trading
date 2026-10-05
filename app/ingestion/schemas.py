@@ -81,6 +81,8 @@ class Fundamentals(SourcedModel):
     eps: float | None = None
     eps_previous: float | None = None
     eps_basis: str | None = None
+    # Переход от EPS <= 0 к EPS > 0: показывается отдельно, но не добавляет баллы Growth.
+    eps_turnaround: bool = False
     gross_margin: float | None = None
     debt_equity: float | None = None
     pe: float | None = None
