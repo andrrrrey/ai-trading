@@ -83,7 +83,7 @@ def test_8k_items_give_deterministic_sign():
     # асимметрия: позитивный пункт +0.5, негативный −1
     assert pos.sec_event_score == 0.5 and pos.signal == 0.5
     assert neg.sec_event_score == -1.0 and neg.signal == -1.0
-    assert neutral.sec_event_score is None and neutral.signal == 0.0
+    assert neutral.sec_event_score == 0.0 and neutral.signal == 0.0
     assert late.sec_event_score == -1.0
 
 
@@ -106,6 +106,18 @@ def test_sec_has_priority_over_news():
     )
     # (1·(+1) + 2·(−1)) / 3
     assert result.signal == pytest.approx(-1.0 / 3.0)
+
+
+def test_neutral_sec_event_keeps_its_weight_against_news():
+    result = analyze_catalysts(
+        [news("Company beats estimates")],  # +1, вес компоненты 1
+        [filing("8-K", CALC, "2.02,9.01")],  # 0, вес компоненты 2
+        calc_date=CALC,
+    )
+
+    assert result.sec_event_count == 1
+    assert result.sec_event_score == 0.0
+    assert result.signal == pytest.approx(1.0 / 3.0)
 
 
 def test_recent_report_is_confirmation_only():

@@ -411,6 +411,7 @@ def render_metrics(signal: Signal) -> str:
     snap = signal.raw_input_snapshot
     f = snap["features"]
     fund = snap["fundamentals"]
+    cfg = stored_scoring_config(signal)
     lines = [f"📈 <b>{_e(signal.ticker)}</b> — исходные метрики:", "", "<b>Технические:</b>"]
     tech = [
         ("Закрытие EOD", f.get("price"), 2),
@@ -436,10 +437,41 @@ def render_metrics(signal: Signal) -> str:
         ("EPS", fund.get("eps"), 2),
         ("Gross Margin %", _pct(fund.get("gross_margin")), 1),
         ("Debt/Equity", fund.get("debt_equity"), 2),
-        ("P/E", fund.get("pe"), 1),
+        ("P/E годовой", fund.get("pe"), 1),
+        ("P/E TTM", fund.get("pe_ttm"), 1),
         ("Forward P/E", fund.get("forward_pe"), 1),
     ]
     lines += [f"• {name}: {_fmt(val, d)}" for name, val, d in fnd]
+    valuation_cfg = cfg.factor_scores.valuation
+    if fund.get("forward_pe") is not None:
+        valuation_pe, valuation_kind = fund["forward_pe"], "Forward P/E"
+    elif valuation_cfg.prefer_ttm_pe and fund.get("pe_ttm") is not None:
+        valuation_pe, valuation_kind = fund["pe_ttm"], "P/E TTM"
+    else:
+        valuation_pe, valuation_kind = fund.get("pe"), "P/E годовой"
+    lines.append(
+        f"• <b>P/E для Valuation: {_fmt(valuation_pe, 1)} ({_e(valuation_kind)})</b>"
+    )
+    statement_date = fund.get("statement_date")
+    growth_date = fund.get("growth_date")
+    if statement_date or growth_date:
+        lines.append(
+            "• Периоды: отчётность "
+            + _e(statement_date or "н/д")
+            + "; Growth "
+            + _e(growth_date or "н/д")
+        )
+    if fund.get("eps_growth_basis"):
+        basis_labels = {
+            "not_applicable_nonpositive_previous_eps": "н/д: предыдущий EPS ≤ 0",
+            "not_applicable_period_mismatch": "н/д: периоды EPS и Growth не совпали",
+            "fmp_growthEPS_positive_previous_eps": "FMP, предыдущий EPS > 0",
+            "fmp_growthEPS_base_unverified": "FMP, база не подтверждена",
+        }
+        lines.append(
+            "• Основание EPS Growth: "
+            + _e(basis_labels.get(fund["eps_growth_basis"], fund["eps_growth_basis"]))
+        )
     lines += ["", DISCLAIMER]
     return "\n".join(lines)
 

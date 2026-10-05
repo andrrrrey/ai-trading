@@ -256,24 +256,82 @@ class FMPClient(BaseSourceClient):
             ttm_result = None
         elif isinstance(ttm_result, BaseException):
             raise ttm_result
+        fetched_at = _now()
         ttm_rows = _as_rows(ttm_result)
         ttm = ttm_rows[0] if ttm_rows else {}
         ratios, metrics, growth = payloads
-        r = _as_rows(ratios)[:1]
+        ratio_rows = _as_rows(ratios)
+        r = ratio_rows[:1]
         m = _as_rows(metrics)[:1]
-        g = _as_rows(growth)[:1]
+        growth_rows = _as_rows(growth)
+        g = growth_rows[:1]
         r = r[0] if r else {}
         m = m[0] if m else {}
         g = g[0] if g else {}
+
+        eps = _first_number(r.get("netIncomePerShare"), m.get("eps"), r.get("eps"))
+        statement_date = _to_date(r.get("date"))
+        growth_date = _to_date(g.get("date"))
+        statement_fiscal_year = (
+            str(r.get("fiscalYear")) if r.get("fiscalYear") is not None else None
+        )
+        growth_fiscal_year = (
+            str(g.get("fiscalYear")) if g.get("fiscalYear") is not None else None
+        )
+        periods_mismatch = (
+            statement_date is not None
+            and growth_date is not None
+            and statement_date != growth_date
+        ) or (
+            statement_fiscal_year is not None
+            and growth_fiscal_year is not None
+            and statement_fiscal_year != growth_fiscal_year
+        )
+        if periods_mismatch:
+            unavailable.append("income-statement-growth (fmp: period_mismatch)")
+
+        previous = ratio_rows[1] if len(ratio_rows) > 1 else {}
+        previous_eps = _first_number(
+            previous.get("netIncomePerShare"), previous.get("eps")
+        )
+        provider_eps_growth = None if periods_mismatch else _to_float(g.get("growthEPS"))
+        if periods_mismatch:
+            eps_growth = None
+            eps_growth_basis = "not_applicable_period_mismatch"
+        elif previous_eps is not None and previous_eps <= 0:
+            # Процентный рост от нулевой/отрицательной базы не имеет устойчивого
+            # экономического смысла (особенно при переходе через ноль). Не
+            # превращаем такой показатель в автоматический Growth=100.
+            eps_growth = None
+            eps_growth_basis = "not_applicable_nonpositive_previous_eps"
+        elif previous_eps is not None:
+            eps_growth = provider_eps_growth
+            eps_growth_basis = "fmp_growthEPS_positive_previous_eps"
+        else:
+            # Некоторые тарифы/моки возвращают только один период. Значение
+            # сохраняем, но явно маркируем, что база не была проверена.
+            eps_growth = provider_eps_growth
+            eps_growth_basis = "fmp_growthEPS_base_unverified"
+
+        pe_ttm = _first_number(
+            ttm.get("priceToEarningsRatioTTM"), ttm.get("peRatioTTM")
+        )
         return Fundamentals(
             ticker=ticker,
             period=period,
-            revenue_growth=_to_float(g.get("growthRevenue")),
-            eps_growth=_to_float(g.get("growthEPS")),
+            statement_date=statement_date,
+            fiscal_year=statement_fiscal_year,
+            growth_date=growth_date,
+            growth_fiscal_year=growth_fiscal_year,
+            revenue_growth=None if periods_mismatch else _to_float(g.get("growthRevenue")),
+            eps_growth=eps_growth,
+            eps_growth_basis=eps_growth_basis,
             # В stable API FMP EPS публикуется как netIncomePerShare в ratios.
             # Старые имена оставлены как fallback для совместимости с моками и
             # предыдущими версиями API.
-            eps=_first_number(r.get("netIncomePerShare"), m.get("eps"), r.get("eps")),
+            eps=eps,
+            eps_previous=previous_eps,
+            eps_basis="annual_basic_reported" if eps is not None else None,
             gross_margin=_first_number(r.get("grossProfitMargin"), m.get("grossProfitMargin")),
             debt_equity=_first_number(
                 r.get("debtToEquityRatio"), r.get("debtEquityRatio"), m.get("debtToEquity")
@@ -282,12 +340,11 @@ class FMPClient(BaseSourceClient):
                 r.get("priceToEarningsRatio"), r.get("priceEarningsRatio"), m.get("peRatio")
             ),
             forward_pe=_to_float(m.get("forwardPE")),
-            pe_ttm=_first_number(
-                ttm.get("priceToEarningsRatioTTM"), ttm.get("peRatioTTM")
-            ),
+            pe_ttm=pe_ttm,
+            pe_ttm_as_of=fetched_at if pe_ttm is not None else None,
             unavailable_parts=unavailable,
             source=self.source,
-            fetched_at=_now(),
+            fetched_at=fetched_at,
         )
 
     async def get_earnings(self, ticker: str) -> Earnings:

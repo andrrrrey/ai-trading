@@ -44,7 +44,7 @@ def test_scoring_config_is_found_from_runtime_workdir(monkeypatch, tmp_path):
     """Установленный wheel должен читать Compose mount /app/config."""
     monkeypatch.chdir(REPO_ROOT)
     monkeypatch.setattr(thresholds, "DEFAULT_THRESHOLDS_PATH", tmp_path / "missing.yaml")
-    assert thresholds.load_scoring_config().version == "v1.5"
+    assert thresholds.load_scoring_config().version == "v1.5.1"
 
 
 # --------------------------------------------------------------------------- #

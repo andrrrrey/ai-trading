@@ -124,6 +124,61 @@ async def test_get_fundamentals_uses_single_period():
 
 
 @respx.mock
+async def test_fundamentals_keep_dates_and_reject_eps_growth_from_nonpositive_base():
+    client, _ = make_client()
+    respx.get(re.compile(r".*/stable/ratios(\?|$)")).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "date": "2026-09-01",
+                    "fiscalYear": "2026",
+                    "period": "FY",
+                    "netIncomePerShare": 2.0,
+                    "priceToEarningsRatio": 20.0,
+                },
+                {
+                    "date": "2025-09-01",
+                    "fiscalYear": "2025",
+                    "period": "FY",
+                    "netIncomePerShare": 0.0,
+                },
+            ],
+        )
+    )
+    respx.get(re.compile(r".*/stable/key-metrics")).mock(
+        return_value=httpx.Response(200, json=[{}])
+    )
+    respx.get(re.compile(r".*/stable/income-statement-growth")).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "date": "2026-09-01",
+                    "fiscalYear": "2026",
+                    "growthRevenue": 0.2,
+                    "growthEPS": 99.0,
+                }
+            ],
+        )
+    )
+    respx.get(re.compile(r".*/stable/ratios-ttm")).mock(
+        return_value=httpx.Response(200, json=[{"priceToEarningsRatioTTM": 21.0}])
+    )
+
+    f = await client.get_fundamentals("ZEROBASE")
+    await client.aclose()
+
+    assert f.statement_date == date(2026, 9, 1)
+    assert f.fiscal_year == "2026"
+    assert f.growth_date == date(2026, 9, 1)
+    assert f.eps_previous == 0.0
+    assert f.eps_growth is None
+    assert f.eps_growth_basis == "not_applicable_nonpositive_previous_eps"
+    assert f.pe_ttm == 21.0 and f.pe_ttm_as_of is not None
+
+
+@respx.mock
 async def test_get_earnings_picks_next_future_date():
     client, _ = make_client()
     respx.get(re.compile(r".*/stable/earnings")).mock(

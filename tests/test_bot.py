@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.bot.service import BotService, parse_ticker, source_error_message
+from app.bot.templates import render_metrics
 from app.db.models import Signal
 from app.db.session import create_all
 from app.ingestion.base_client import SourceError
@@ -295,6 +296,20 @@ async def test_history_has_no_trading_status_before_rule_engine(session_factory)
     assert "Score" in text and "Risk" in text
     for status in ("BUY", "WATCH", "SELL"):
         assert status not in text
+
+
+async def test_metrics_show_the_pe_used_for_valuation(session_factory):
+    service = make_service(session_factory, {"NVDA": _market("NVDA")})
+    _, signal_id = await service.analyze("NVDA")
+    async with session_factory() as session:
+        signal = await session.get(Signal, signal_id)
+
+    # У тестового сигнала есть forward P/E, значит именно он должен быть явно
+    # назван используемым, а годовой и TTM остаются отдельными строками.
+    text = render_metrics(signal)
+    assert "P/E годовой" in text
+    assert "P/E TTM" in text
+    assert "P/E для Valuation: 24.0 (Forward P/E)" in text
 
 
 async def test_unknown_ticker_is_not_saved(session_factory):

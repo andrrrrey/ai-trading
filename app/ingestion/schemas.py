@@ -69,15 +69,25 @@ class RawPriceHistory(SourcedModel):
 class Fundamentals(SourcedModel):
     ticker: str
     period: str | None = None
+    # Даты и периоды сохраняются вместе со значениями: без них нельзя доказать,
+    # что EPS, growth и мультипликаторы относятся к сопоставимой отчётности.
+    statement_date: date | None = None
+    fiscal_year: str | None = None
+    growth_date: date | None = None
+    growth_fiscal_year: str | None = None
     revenue_growth: float | None = None
     eps_growth: float | None = None
+    eps_growth_basis: str | None = None
     eps: float | None = None
+    eps_previous: float | None = None
+    eps_basis: str | None = None
     gross_margin: float | None = None
     debt_equity: float | None = None
     pe: float | None = None
     forward_pe: float | None = None
     # P/E за последние 12 месяцев (FMP ratios-ttm); годовой pe может отставать на год.
     pe_ttm: float | None = None
+    pe_ttm_as_of: datetime | None = None
     # Проставляется слоем нормализации: часть ключевых метрик отсутствует.
     is_incomplete: bool = False
     # Запросы, которые не удалось выполнить: "key-metrics (fmp: timeout)".

@@ -256,9 +256,10 @@ def analyze_catalysts(
             weight = 1.0 - age / cfg.sec_event_lookback_days
             sign = filing_event_sign(filing, cfg)
             sec_event_count += 1
-            if sign != 0.0:
-                signed_sum += sign * weight
-                signed_weight += weight
+            # Нейтральное событие — это доступная SEC-компонента со значением 0,
+            # а не отсутствие данных. Поэтому его вес участвует в знаменателе.
+            signed_sum += sign * weight
+            signed_weight += weight
             sec_evidence.append(
                 CatalystEvidence(
                     kind="sec_event",

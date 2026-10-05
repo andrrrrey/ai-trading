@@ -37,7 +37,7 @@ app/
   scoring/             # 7 Factor Scores и Final Score
   risk/                # Risk Filter
   calculation.py       # расчётное ядро (общее для живого расчёта и повтора)
-config/thresholds.yaml # веса Score, пороги Risk/Rule Engine (версия формул v1.5)
+config/thresholds.yaml # веса Score, пороги Risk/Rule Engine (версия формул v1.5.1)
 scripts/               # smoke, replay, backup/restore, сборка артефактов приёмки
 tests/                 # pytest
 docs/APPROVAL_STAGE1_DECISIONS.md  # протокол согласования правил с Заказчиком
